@@ -11,6 +11,10 @@ download_data <- function(states = c("TX", "OR")) {
   # increase timeouts since some of these take a bit to download: 
   options(timeout=180)
   
+  # setting working directory - CRON default is home directory so needed to 
+  # route it towards the location of my remote:
+  setwd("/Users/emmalitsai/state-drinking-water")
+  
   # required libraries - will need to manage these dependencies in some way 
   # to avoid having to load them each time the function is run (maybe an R package?)
   library(dplyr)
@@ -59,7 +63,7 @@ download_data <- function(states = c("TX", "OR")) {
 
 download_data(states = c("TX", "OR"))
 
-# packages for automating R scripts on Macs: 
+# SOP for automating R scripts on Macs: 
 # install.packages("cronR")
 # library(cronR)
 # cronR::cron_rstudioaddin() -- use this interface to schedule batch-downloads 
@@ -67,18 +71,8 @@ download_data(states = c("TX", "OR"))
 # more for collaborative data projects - maybe there's a different method 
 # to consider here? -- I've set this up to run every hour using my command line
 #
-# alternative here using GitHub actions: 
+# alternative here using GitHub actions and wrapping all of this into a 
+# package: 
 # https://www.simonpcouch.com/blog/2020-12-27-r-github-actions-commit/
 
 
-# would read from data lake like this: 
-# # source: https://medium.com/@som028/how-to-read-and-write-data-from-and-to-s3-bucket-using-r-3fed7e686844
-# readFromS3 = function(filename, bucket, sep = ','){
-#   return(s3read_using(FUN=read.csv, 
-#                       bucket = bucket, 
-#                       object=filename,
-#                       sep = sep, header=T))
-# }
-# 
-# # https://services8.arcgis.com/SVa1M0pGzvtS1NP4/ArcGIS/rest/services/Public_Water_System_Census_Block_Crosswalk/FeatureServer/0
-# pwsid_block_crosswalk <- readFromS3('/pws_crosswalk/pws_census_block_weighted_crosswalk.csv', 'tech-team-data', sep=',')
