@@ -3,39 +3,82 @@
 # Author: EmmaLi Tsai 
 # Date: 12/1/2023
 ################################################################################
-# Function takes a state acronym and pulls national drinking water data 
-# the though here is that data will be uploaded to aws here into a larger 
-# data lake 
-download_data <- function(state = c("TX")) {
+# Function takes a vector of state acronyms and pulls national drinking water 
+# data - data is then saved into the ./data/raw folder, with the potential 
+# to write to an aws s3 bucket in the future. 
+
+download_data <- function(states = c("TX", "OR")) {
   # increase timeouts since some of these take a bit to download: 
   options(timeout=180)
   
+  # required libraries - will need to manage these dependencies in some way 
+  # to avoid having to load them each time the function is run (maybe an R package?)
+  library(dplyr)
+  library(arcpullr)
+  library(sf)
+  library(readr)
+  library(magrittr)
+  
   ## Service area boundaries: ##
   sab <- sf::st_read("https://www.hydroshare.org/resource/9ebc0a0b43b843b9835830ffffdd971e/data/contents/temm.gpkg")
-  # minor cleaning: 
-  sab_state <- sab %>% 
-    dplyr::filter(state_code == state) %>%
-    dplyr::mutate(area_miles = as.numeric(st_area(.))) %>%
+  # minor cleaning and subsetting based on state pwsids
+  sab_states <- sab %>% 
+    dplyr::filter(state_code %in% states) %>%
+    dplyr::mutate(area_miles = as.numeric(sf::st_area(.))) %>%
     dplyr::mutate(area_miles = area_miles/27880000) %>%
     dplyr::mutate(pop_density = population_served_count / area_miles)
-
+  print("Pulling SABs")
+  
   ## Crosswalk: ##
-  # grabbing pwsids from dataset above for querying: 
-  sab_pwsids <- unique(sab_state$pwsid)
+  # grabbing pwsids from dataset above for SQL query: 
+  sab_pwsids <- unique(sab_states$pwsid)
   # querying from REST services: 
   idString <- toString(sprintf("'%s'", sab_pwsids)) 
   sql_fmt <- "pwsid in (%s)"
   sql <- sprintf(sql_fmt, idString)
   pws_cross <- arcpullr::get_table_layer(url = "https://services8.arcgis.com/SVa1M0pGzvtS1NP4/ArcGIS/rest/services/Public_Water_System_Census_Block_Crosswalk/FeatureServer/0", 
                                          where = sql)
+  print("Pulling Crosswalk")
   
-  ## Crosswalk x service area boundaries ##
-  sab_cross <- merge(sab_state, pws_cross, by = "pwsid", all = TRUE)
-  # writing - this needs to be an rds object since some of the columns are 
-  # lists -- this will of course write to S3 but storing locally for now 
-  readr::write_rds(sab_cross, paste0("./data/raw/", state, "_sabcrosswalk_raw.rds"))
-  
+  # looping through states for merging and writing: 
+  for(i in 1:length(states)){
+    # subsetting state data: 
+    state_i <- states[i]
+    sab_i <- subset(sab_states, state_code == state_i)
+    pws_cross_i <- subset(pws_cross, pwsid %in% unique(sab_i$pwsid))
+    ## Crosswalk x service area boundaries ##
+    sab_cross <- merge(sab_i, pws_cross_i, by = "pwsid", all = TRUE)
+    # writing - this needs to be an rds object since some of the columns are 
+    # lists -- this will of course write to S3 but storing locally for now 
+    readr::write_rds(sab_cross, paste0("./data/raw/", state_i, 
+                                       "-sabcrosswalk-raw.rds"))  
+    print(paste0("Data saved for ", state_i))
+  }
 }
 
-# download_data(state = "TX")
-# download_data(state = "OR")
+
+download_data(states = c("TX", "OR"))
+
+# packages for automating R scripts on Macs: 
+# install.packages("cronR")
+# library(cronR)
+# cronR::cron_rstudioaddin() -- use this interface to schedule batch-downloads 
+# will use the the command line on your computer to execute -- consider this 
+# more for collaborative data projects - maybe there's a different method 
+# to consider here? -- I've set this up to run every hour using my command line
+#
+# alternative here using GitHub actions: 
+# https://www.simonpcouch.com/blog/2020-12-27-r-github-actions-commit/
+
+
+# would read from data lake like this: 
+# # source: https://medium.com/@som028/how-to-read-and-write-data-from-and-to-s3-bucket-using-r-3fed7e686844
+# readFromS3 = function(filename, bucket, sep = ','){
+#   return(s3read_using(FUN=read.csv, 
+#                       bucket = bucket, 
+#                       object=filename,
+#                       sep = sep, header=T))
+# }
+# 
+# # https://services8.arcgis.com/SVa1M0pGzvtS1NP4/ArcGIS/rest/services/Public_Water_System_Census_Block_Crosswalk/FeatureServer/0
+# pwsid_block_crosswalk <- readFromS3('/pws_crosswalk/pws_census_block_weighted_crosswalk.csv', 'tech-team-data', sep=',')

@@ -47,3 +47,11 @@ po/*~
 
 # RStudio Connect folder
 rsconnect/
+
+# Data files: 
+data/raw/OR-sabcrosswalk-raw.rds
+data/raw/TX-sabcrosswalk-raw.rds
+
+# Batch download logs: 
+code/download_handlers.log
+
