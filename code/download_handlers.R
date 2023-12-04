@@ -6,7 +6,9 @@
 # Function takes a vector of state acronyms and pulls national drinking water 
 # data - data is then saved into the ./data/raw folder, with the potential 
 # to write to an aws s3 bucket in the future. 
-
+# 
+# in general - this takes about 10 minutes to run for two states: 
+################################################################################
 download_data <- function(states = c("TX", "OR")) {
   # increase timeouts since some of these take a bit to download: 
   options(timeout=180)
@@ -14,6 +16,8 @@ download_data <- function(states = c("TX", "OR")) {
   # setting working directory - CRON default is home directory so needed to 
   # route it towards the location of my remote:
   setwd("/Users/emmalitsai/state-drinking-water")
+  # printing for log troubleshooting purposes 
+  print(Sys.time()) 
   
   # required libraries - will need to manage these dependencies in some way 
   # to avoid having to load them each time the function is run (maybe an R package?)
@@ -46,16 +50,29 @@ download_data <- function(states = c("TX", "OR")) {
   
   # looping through states for merging and writing: 
   for(i in 1:length(states)){
-    # subsetting state data: 
+    # subsetting for state data: 
     state_i <- states[i]
     sab_i <- subset(sab_states, state_code == state_i)
     pws_cross_i <- subset(pws_cross, pwsid %in% unique(sab_i$pwsid))
+    
     ## Crosswalk x service area boundaries ##
     sab_cross <- merge(sab_i, pws_cross_i, by = "pwsid", all = TRUE)
-    # writing - this needs to be an rds object since some of the columns are 
-    # lists -- this will of course write to S3 but storing locally for now 
-    readr::write_rds(sab_cross, paste0("./data/raw/", state_i, 
-                                       "-sabcrosswalk-raw.rds"))  
+    
+    # writing to aws bucket
+    # NOTE that you need private credentials here 
+    file_name <- paste0(state_i, "-sabcrosswalk-raw.rds")
+    # file path in aws bucket
+    aws_filepath <- paste0("state-drinking-water/", state_i, "/raw/", file_name)
+    # writing to temporary location  
+    readr::write_rds(data, file.path(tempdir(), file_name))
+    # storing temp file into a bucket - commented out for now until we decide 
+    # data storage stucture for this project: 
+    # put_object(
+    #   file = file.path(tempdir(), file_name),
+    #   object = aws_filepath,
+    #   bucket = "tech-team-data",
+    # )
+    
     print(paste0("Data saved for ", state_i))
   }
 }
@@ -65,7 +82,6 @@ download_data(states = c("TX", "OR"))
 
 # SOP for automating R scripts on Macs: 
 # install.packages("cronR")
-# library(cronR)
 # cronR::cron_rstudioaddin() -- use this interface to schedule batch-downloads 
 # will use the the command line on your computer to execute -- consider this 
 # more for collaborative data projects - maybe there's a different method 
