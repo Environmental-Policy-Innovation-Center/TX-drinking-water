@@ -1,0 +1,21 @@
+---
+title: "TX Water Data Cleaning & Processing"
+output: html_document
+date: "2023-12-07"
+author: "EmmaLi Tsai" 
+---
+
+Sourcing downloaders: 
+```{r}
+source("~/TX-drinking-water/code/download_handlers/download_sabcrosswalk.R")
+```
+
+
+Grabbing data from APIs: 
+```{r}
+# note that you may need to increase vector memory - see here: 
+# https://stackoverflow.com/questions/51295402/r-on-macos-error-vector-memory-exhausted-limit-reached
+TX_sabcrosswalk <- download_sabcrosswalk(states = c("TX"))
+TX_sab <- download_sab(states = c("TX"))
+TX_cross <- download_blockcrosswalk(pwsids = unique(TX_sab$pwsid))
+```
