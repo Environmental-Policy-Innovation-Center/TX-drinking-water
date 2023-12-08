@@ -4,6 +4,11 @@
 # Date: 12/7/2023
 ################################################################################
 # Function downloads data from SDWIS
+# TODO: function currently only loops through one pwsid at a time and that is 
+#       SLOW- especially for TX which has 4586 pwsids 
+# TODO: function can only handle one contaminant at a time, but I could also 
+#       remove the contaminant and we'd download all of the violation data 
+#       for that pwsid and could filter down from there. 
 ################################################################################
 download_SDWIS <- function(pwsids = c("TX0740039", "TX0750003", "TX0650002"), 
                            cont_code = c("1025")){
@@ -35,6 +40,47 @@ download_SDWIS <- function(pwsids = c("TX0740039", "TX0750003", "TX0650002"),
     # appending to original df: 
     violations_df <- rbind(violations_df, violations_i)
   }
-  
+  # lil sound when the function is complete: 
+  beepr::beep(2)
   return(violations_df)
+}
+
+
+# It's  more efficient to pull all data from the api and then filter down - 
+# here's a possible second function: 
+# Corrected from: https://github.com/Environmental-Policy-Innovation-Center/water_team/blob/main/data/raw_data/sdwis/sdwis_violation/downloader_sdwis_violation.Rmd
+download_SDWIS_v2 <- function(pwsids = c("TX0740039", "TX0750003", "TX0650002"), 
+                              cont_code = c("1025", "0999")){
+  
+  # Options here to handle scientific notation errors in web service requests: 
+  options("scipen"=10, "digits"=4)
+  
+  # First, determine how many total violation records there are: 
+  violation_url <- "https://data.epa.gov/efservice/VIOLATION/COUNT"
+  n_records_vi_xml <- xml2::read_xml(violation_url)
+  n_records_vi_ls <- xml2::as_list(n_records_vi_xml)
+  n_records_vi <- as.numeric(n_records_vi_ls$violationList$violation$TOTALQUERYRESULTS)
+  
+  # For loop requests records 100,000 to end and appends them to the first 
+  # 100,000 records: 
+  violations_raw <- data.frame()
+  for (i in 1:(ceiling(n_records_vi/1e5)-1)) {
+    print(i, " out of ", ceiling(n_records_vi/1e5)-1)
+    violation_url <- "https://data.epa.gov/efservice/violation/ROWS/"
+    temp_url <- paste0(violation_url,
+                       as.character(i*100000),
+                       ":",
+                       i*100000 + 99999,
+                       "/CSV")
+    dat <- data.table::fread(temp_url, colClasses = "character")
+    violations_raw <- rbind(violations_raw, dat)
+  }
+  
+  # filtering data based on provided arguments: 
+  sdwis_filt <- violations_raw %>%
+    filter(pwsid %in% pwsids) %>%
+    filter(contaminant_code %in% cont_code)
+  
+  # return: 
+  return(sdwis_filt)
 }
