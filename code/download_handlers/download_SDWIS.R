@@ -54,6 +54,7 @@ download_SDWIS_v2 <- function(pwsids = c("TX0740039", "TX0750003", "TX0650002"),
   
   # Options here to handle scientific notation errors in web service requests: 
   options("scipen"=10, "digits"=4)
+  library(dplyr)
   
   # First, determine how many total violation records there are: 
   violation_url <- "https://data.epa.gov/efservice/VIOLATION/COUNT"
@@ -65,7 +66,7 @@ download_SDWIS_v2 <- function(pwsids = c("TX0740039", "TX0750003", "TX0650002"),
   # 100,000 records: 
   violations_raw <- data.frame()
   for (i in 1:(ceiling(n_records_vi/1e5)-1)) {
-    print(i, " out of ", ceiling(n_records_vi/1e5)-1)
+    print(i)
     violation_url <- "https://data.epa.gov/efservice/violation/ROWS/"
     temp_url <- paste0(violation_url,
                        as.character(i*100000),
@@ -76,6 +77,7 @@ download_SDWIS_v2 <- function(pwsids = c("TX0740039", "TX0750003", "TX0650002"),
     violations_raw <- rbind(violations_raw, dat)
   }
   
+  print("Final filtering")
   # filtering data based on provided arguments: 
   sdwis_filt <- violations_raw %>%
     filter(pwsid %in% pwsids) %>%

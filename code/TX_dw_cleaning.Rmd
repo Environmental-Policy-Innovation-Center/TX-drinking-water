@@ -18,7 +18,9 @@ Grabbing data from APIs:
 # TX_sabcrosswalk <- download_sabcrosswalk(states = c("TX"))
 TX_sab <- download_sab(states = c("TX"))
 TX_cross <- download_blockcrosswalk(pwsids = unique(TX_sab$pwsid))
-# currently looking at Flouride violations (cont code = 1025)
+# currently looking at Fluoride violations (cont code = 1025)
 TX_sdwis <- download_SDWIS(pwsids = unique(TX_sab$pwsid), 
                            cont_code = "1025")
+TX_sdiws <- download_SDWIS_v2(pwsids = unique(TX_sab$pwsid), 
+                              cont_code = c("1025", "0999"))
 ```
