@@ -8,6 +8,7 @@ author: "EmmaLi Tsai"
 Sourcing downloaders: 
 ```{r}
 source("~/TX-drinking-water/code/download_handlers/download_sabcrosswalk.R")
+source("~/TX-drinking-water/code/download_handlers/download_SDWIS.R")
 ```
 
 
@@ -15,7 +16,9 @@ Grabbing data from APIs:
 ```{r}
 # note that you may need to increase vector memory - see here: 
 # https://stackoverflow.com/questions/51295402/r-on-macos-error-vector-memory-exhausted-limit-reached
-TX_sabcrosswalk <- download_sabcrosswalk(states = c("TX"))
+# TX_sabcrosswalk <- download_sabcrosswalk(states = c("TX"))
 TX_sab <- download_sab(states = c("TX"))
 TX_cross <- download_blockcrosswalk(pwsids = unique(TX_sab$pwsid))
+TX_sdwis <- download_SDWIS(pwsids = unique(TX_sab$pwsid)[1:50], 
+                           cont_code = "1025")
 ```

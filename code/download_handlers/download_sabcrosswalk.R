@@ -106,6 +106,8 @@ download_sabcrosswalk <- function(states = c("TX")) {
 
 # alternatively - we could also have these as separate functions: 
 download_sab <- function(states = ("TX")){
+  library(magrittr)
+  
   ## Service area boundaries: ##
   sab <- sf::st_read("https://www.hydroshare.org/resource/9ebc0a0b43b843b9835830ffffdd971e/data/contents/temm.gpkg")
   # minor cleaning and subsetting based on state pwsids
@@ -119,6 +121,7 @@ download_sab <- function(states = ("TX")){
 
 download_blockcrosswalk <- function(pwsids = c("AR0000360", "TX0610218", 
                                                "TX0610220", "TX0610223", "TX0610224")){
+  library(magrittr)
   ## Crosswalk: ##
   # querying from REST services: 
   idString <- toString(sprintf("'%s'", pwsids)) 
