@@ -13,14 +13,36 @@ source("~/TX-drinking-water/code/download_handlers/download_SDWIS.R")
 
 Grabbing data from APIs: 
 ```{r}
-# note that you may need to increase vector memory - see here: 
-# https://stackoverflow.com/questions/51295402/r-on-macos-error-vector-memory-exhausted-limit-reached
-# TX_sabcrosswalk <- download_sabcrosswalk(states = c("TX"))
+# grabbing sabs: 
 TX_sab <- download_sab(states = c("TX"))
-TX_cross <- download_blockcrosswalk(pwsids = unique(TX_sab$pwsid))
-# currently looking at Fluoride violations (cont code = 1025)
-TX_sdwis <- download_SDWIS(pwsids = unique(TX_sab$pwsid), 
-                           cont_code = "1025")
-TX_sdiws <- download_SDWIS_v2(pwsids = unique(TX_sab$pwsid), 
-                              cont_code = c("1025", "0999"))
+# making note the of the pwsids located in TX: 
+TX_pwsids <- unique(TX_sab$pwsid)
+# grabbing block crosswalks from the pwsids: 
+TX_cross <- download_blockcrosswalk(pwsids = TX_pwsids)
+# grabbing SDWIS data - currently looking at Fluoride and Chlorine violations (1025 and 0999 respectively)
+TX_sdiws <- download_SDWIS(pwsids = TX_pwsids, 
+                           cont_code = c("1025", "0999"))
+# census data 
+TX_census <- tidycensus::get_decennial(
+  geography = "block", 
+  variables = c(total_pop = "P1_001N", 
+                black_alone = "P1_004N", 
+                asian_alone = "P1_006N", 
+                white_alone = "P1_003N", 
+                AIAN_alone = "P1_005N", 
+                hisp_alone = "P2_002N"), 
+  state = "TX", 
+  year = 2020,
+  geometry = TRUE
+)
+# srf data
+## need to ask Phil about the best way to grab this data ##
+
+```
+Data merging: 
+```{r}
+# crosswalking TX sabs with census blocks: 
+TX_sab_cross <- merge(TX_sab, TX_cross, by = "pwsid", all = TRUE)
+
+
 ```
