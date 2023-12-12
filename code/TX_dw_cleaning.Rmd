@@ -27,7 +27,7 @@ TX_pwsids <- unique(TX_sab$pwsid)
 # grabbing block crosswalks from the pwsids: 
 TX_cross <- download_blockcrosswalk(pwsids = TX_pwsids)
 # grabbing SDWIS data - currently looking at Fluoride and Chlorine violations (1025 and 0999 respectively)
-TX_sdiws <- download_SDWIS(pwsids = TX_pwsids, 
+TX_sdwis <- download_SDWIS(pwsids = TX_pwsids, 
                            cont_code = c("1025", "0999"))
 # census data 
 TX_census <- tidycensus::get_decennial(
@@ -38,7 +38,7 @@ TX_census <- tidycensus::get_decennial(
                 white_alone = "P1_003N", 
                 AIAN_alone = "P1_005N", 
                 hisp_alone = "P2_002N"), 
-  state = "TX", 
+  state = unique(TX_sab$state_code), 
   year = 2020,
   geometry = TRUE
 )
@@ -49,7 +49,7 @@ TX_census <- tidycensus::get_decennial(
 
 Data merging & crosswalking: 
 ```{r}
-## Grabbing race statistics for pwsids: ##
+## Grabbing race statistics for pwsids: ########################################
 # crosswalking TX sabs with census racial info:
 TX_census_wide <- pivot_wider(TX_census, names_from = c("variable"), 
                               values_from = c("value"))
@@ -72,17 +72,27 @@ pwsid_census <- group_by(pwsid_weighted_census, pwsid) %>%
 pwsid_census_per <- pwsid_census %>%
   mutate_at(vars(black_alone:hisp_alone),  ~(./total_pop))
 pwsid_census_per$poc_alone <- (1 - pwsid_census_per$white_alone)
-# merging this back with pwsid geometries for plotting: 
+# merging this back with pwsid geometries for mapping: 
 TX_pwsid_geoms <- TX_sab %>%
   select(pwsid, geom)
 TX_pwsid_census_tidy <- merge(TX_pwsid_geoms, pwsid_census_per, all = T)
 
-## SDWIS data tidying ##
+## SDWIS data tidying ##########################################################
+# finding the total number of violations (need to also standardize for year and
+# how long the system has been operating for):
+TX_violations <- TX_sdwis %>%
+  group_by(pwsid, primary_source_code) %>%
+  summarize(total_viol = length(unique(violation_id)))
+# grabbing geoms for mapping: 
+TX_violations_tidy <- merge(TX_pwsid_geoms, TX_violations, all = T)
+
+## SRF data tidying ############################################################
+
 ```
 
 Maps & Plots (QA/QC)
 ```{r}
-## Map of pwsids and % poc: ##
+## Map of pwsids and % poc ####################################################
 # converting to sf, transformations, and filtering 
 TX_pwsid_census_tidy <- st_as_sf(TX_pwsid_census_tidy)
 TX_pwsid_census_tidy <- st_transform(TX_pwsid_census_tidy, 
@@ -109,5 +119,27 @@ leaflet() %>%
             values = TX_pwsid_census_tidy$poc_alone,
             title = "% POC",
             opacity = 1)
+
+## Map of pwsids and # SDWIS violations ########################################
+# map of total number of violations for pwsid: 
+viol_pal <- colorNumeric(
+  palette = viridis::plasma(6),
+  domain = TX_violations_tidy$total_viol)
+leaflet() %>%
+  addProviderTiles(providers$CartoDB.VoyagerNoLabels, group = "Toner Lite")  %>%
+  addPolygons(data = TX_violations_tidy, 
+              opacity = 9,
+              color = ~viol_pal(total_viol),
+              weight = 1, 
+              highlightOptions = highlightOptions(color = "grey", weight = 2,
+                                                  bringToFront = TRUE), 
+              label = paste0("pwsid: ", TX_violations_tidy$pwsid, 
+                             " / violations: ", TX_violations_tidy$total_viol)) %>%
+    addLegend("bottomright", 
+            pal = viol_pal, 
+            values = TX_violations_tidy$total_viol,
+            title = "# violations",
+            opacity = 1)
+
 ```
 
