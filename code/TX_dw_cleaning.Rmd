@@ -5,6 +5,13 @@ date: "2023-12-07"
 author: "EmmaLi Tsai" 
 ---
 
+Packages: 
+```{r}
+library(tidyverse)
+library(leaflet)
+library(sf)
+```
+
 Sourcing downloaders: 
 ```{r}
 source("~/TX-drinking-water/code/download_handlers/download_sabcrosswalk.R")
@@ -36,13 +43,71 @@ TX_census <- tidycensus::get_decennial(
   geometry = TRUE
 )
 # srf data
-## need to ask Phil about the best way to grab this data ##
+## need to ask Phil about the best way to grab this data from aws ##
 
 ```
-Data merging: 
+
+Data merging & crosswalking: 
 ```{r}
-# crosswalking TX sabs with census blocks: 
-TX_sab_cross <- merge(TX_sab, TX_cross, by = "pwsid", all = TRUE)
+## Grabbing race statistics for pwsids: ##
+# crosswalking TX sabs with census racial info:
+TX_census_wide <- pivot_wider(TX_census, names_from = c("variable"), 
+                              values_from = c("value"))
+# removing extra information before the merge: 
+TX_census_wide <- subset(TX_census_wide, select = -c(NAME, geometry))
+# merging sab pws crosswalk with census stats: 
+TX_pwsid_census <- merge(as.data.frame(TX_cross), 
+                         as.data.frame(TX_census_wide), 
+                         by.x = "census_block", 
+                         by.y = "GEOID", 
+                         all = T)
+# accounting for block weights by multiplying race stats by block
+# parcel weights: 
+pwsid_weighted_census <- TX_pwsid_census %>% 
+  mutate(across(total_pop:hisp_alone, ~.*block_parcel_weight))
+# sum across pwsid and rounding to control for decimal places: 
+pwsid_census <- group_by(pwsid_weighted_census, pwsid) %>% 
+  summarize(across(total_pop:hisp_alone, ~round(sum(.), 0)))
+# calculating percentage of demographic groups: 
+pwsid_census_per <- pwsid_census %>%
+  mutate_at(vars(black_alone:hisp_alone),  ~(./total_pop))
+pwsid_census_per$poc_alone <- (1 - pwsid_census_per$white_alone)
+# merging this back with pwsid geometries for plotting: 
+TX_pwsid_geoms <- TX_sab %>%
+  select(pwsid, geom)
+TX_pwsid_census_tidy <- merge(TX_pwsid_geoms, pwsid_census_per, all = T)
 
-
+## SDWIS data tidying ##
 ```
+
+Maps & Plots (QA/QC)
+```{r}
+## Map of pwsids and % poc: ##
+# converting to sf, transformations, and filtering 
+TX_pwsid_census_tidy <- st_as_sf(TX_pwsid_census_tidy)
+TX_pwsid_census_tidy <- st_transform(TX_pwsid_census_tidy, 
+                                         '+proj=longlat +datum=WGS84')
+TX_pwsid_census_tidy <- TX_pwsid_census_tidy %>% 
+  filter(!st_is_empty(.))
+
+# plotting: 
+poc_pal <- colorNumeric(
+  palette = viridis::turbo(6),
+  domain = TX_pwsid_census_tidy$poc_alone)
+leaflet() %>%
+  addProviderTiles(providers$CartoDB.VoyagerNoLabels, group = "Toner Lite")  %>%
+  addPolygons(data = TX_pwsid_census_tidy, 
+              opacity = 9,
+              color = ~poc_pal(poc_alone),
+              weight = 1, 
+              highlightOptions = highlightOptions(color = "grey", weight = 2,
+                                                  bringToFront = TRUE), 
+              label = paste0("pwsid: ", TX_pwsid_census_tidy$pwsid, 
+                             " / poc %: ", round(TX_pwsid_census_tidy$poc_alone*100, 2))) %>%
+    addLegend("bottomright", 
+            pal = poc_pal, 
+            values = TX_pwsid_census_tidy$poc_alone,
+            title = "% POC",
+            opacity = 1)
+```
+
