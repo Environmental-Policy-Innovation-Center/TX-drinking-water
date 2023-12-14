@@ -72,10 +72,14 @@ pwsid_census <- group_by(pwsid_weighted_census, pwsid) %>%
 pwsid_census_per <- pwsid_census %>%
   mutate_at(vars(black_alone:hisp_alone),  ~(./total_pop))
 pwsid_census_per$poc_alone <- (1 - pwsid_census_per$white_alone)
-# merging this back with pwsid geometries for mapping: 
-TX_pwsid_geoms <- TX_sab %>%
-  select(pwsid, geom)
-TX_pwsid_census_tidy <- merge(TX_pwsid_geoms, pwsid_census_per, all = T)
+# merging this back with sab dataset for mapping: 
+TX_pwsid_census_tidy <- merge(TX_sab, pwsid_census_per, all = T)
+
+## SRF data tidying ############################################################
+
+## Merging SDWIS, sabs, census, and crosswalk ################################## 
+TX_census_sdwis <- merge(TX_pwsid_census_tidy, TX_sdwis, all = T)
+## NOTE: this could then write to the data lake using the aws functions 
 
 ## SDWIS data tidying ##########################################################
 # finding the total number of violations (need to also standardize for year and
@@ -85,8 +89,6 @@ TX_violations <- TX_sdwis %>%
   summarize(total_viol = length(unique(violation_id)))
 # grabbing geoms for mapping: 
 TX_violations_tidy <- merge(TX_pwsid_geoms, TX_violations, all = T)
-
-## SRF data tidying ############################################################
 
 ```
 

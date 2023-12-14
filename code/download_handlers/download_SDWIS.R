@@ -20,7 +20,7 @@ download_SDWIS <- function(pwsids = c("TX0740039", "TX0750003", "TX0650002"),
   n_records_vi_xml <- xml2::read_xml(violation_url)
   n_records_vi_ls <- xml2::as_list(n_records_vi_xml)
   n_records_vi <- as.numeric(n_records_vi_ls$violationList$violation$TOTALQUERYRESULTS)
-  
+  # n_records_vi <- as.numeric(n_records_vi_ls$violation_enf_assocList$violation_enf_assoc$TOTALQUERYRESULTS)
   # For loop requests records 100,000 to end and appends them to the first 
   # 100,000 records: 
   violations_raw <- data.frame()
@@ -46,7 +46,7 @@ download_SDWIS <- function(pwsids = c("TX0740039", "TX0750003", "TX0650002"),
   return(sdwis_filt)
 }
 
-# on older verion of the functiont that looped through each pwsid which was 
+# on older version of the function that looped through each pwsid which was 
 # GRUELING for a state as large as TX
 # download_SDWIS_v2 <- function(pwsids = c("TX0740039", "TX0750003", "TX0650002"), 
 #                            cont_code = c("1025")){
