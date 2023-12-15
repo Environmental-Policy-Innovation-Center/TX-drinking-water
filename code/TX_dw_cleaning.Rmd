@@ -42,6 +42,7 @@ TX_census <- tidycensus::get_decennial(
   year = 2020,
   geometry = TRUE
 )
+
 # srf data
 ## need to ask Phil about the best way to grab this data from aws ##
 
@@ -51,7 +52,8 @@ Data merging & crosswalking:
 ```{r}
 ## Grabbing race statistics for pwsids: ########################################
 # crosswalking TX sabs with census racial info:
-TX_census_wide <- pivot_wider(TX_census, names_from = c("variable"), 
+TX_census_wide <- pivot_wider(TX_census, 
+                              names_from = c("variable"), 
                               values_from = c("value"))
 # removing extra information before the merge: 
 TX_census_wide <- subset(TX_census_wide, select = -c(NAME, geometry))
@@ -75,11 +77,13 @@ pwsid_census_per$poc_alone <- (1 - pwsid_census_per$white_alone)
 # merging this back with sab dataset for mapping: 
 TX_pwsid_census_tidy <- merge(TX_sab, pwsid_census_per, all = T)
 
-## SRF data tidying ############################################################
-
 ## Merging SDWIS, sabs, census, and crosswalk ################################## 
 TX_census_sdwis <- merge(TX_pwsid_census_tidy, TX_sdwis, all = T)
 ## NOTE: this could then write to the data lake using the aws functions 
+
+## SRF data tidying ############################################################
+
+
 
 ## SDWIS data tidying ##########################################################
 # finding the total number of violations (need to also standardize for year and
@@ -94,6 +98,19 @@ TX_violations_tidy <- merge(TX_pwsid_geoms, TX_violations, all = T)
 
 Maps & Plots (QA/QC)
 ```{r}
+## QA/QC #####################################################################
+# creating a diagnostic log: 
+diag_log <- data.frame(diagnostic = "") %>%
+  mutate(zero_sdwis_pop = sum(TX_pwsid_census_tidy$population_served_count == 0, 
+                              na.rm = TRUE), 
+         na_sdwis_pop = sum(is.na(TX_pwsid_census_tidy$population_served_count)), 
+         # where there are empty geometries - in the original TX_sab dataset 
+         empty_geoms = sum(sf::st_is_empty(TX_pwsid_census_tidy)), 
+         na_census_data = sum(is.na(TX_pwsid_census_tidy$total_pop)), 
+         zero_area = sum(TX_pwsid_census_tidy$area_miles == 0,
+         na.rm = TRUE)) %>%
+  select(-diagnostic)
+
 ## Map of pwsids and % poc ####################################################
 # converting to sf, transformations, and filtering 
 TX_pwsid_census_tidy <- st_as_sf(TX_pwsid_census_tidy)
