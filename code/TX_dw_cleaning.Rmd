@@ -10,6 +10,7 @@ Packages:
 library(tidyverse)
 library(leaflet)
 library(sf)
+library(aws.s3)
 ```
 
 Sourcing downloaders: 
@@ -50,9 +51,11 @@ TX_census <- tidycensus::get_decennial(
   geometry = TRUE
 )
 
-# srf data
-## need to ask Phil about the best way to grab this data from aws ##
-
+# srf data # I think this is the best way to grab srf data but need to check 
+# with Phil 
+TX_PPL <- read_csv(get_object(object = "clean_data/srf_project_priority_lists/web_ppl_combined_clean_v1-1.csv", bucket = "water-team-data")) %>%
+  mutate(across('Project Type', str_replace, 'Other', 'General')) %>%
+  filter(State == "Texas")
 ```
 
 Data merging & crosswalking: 
