@@ -26,7 +26,14 @@ TX_sab <- download_sab(states = c("TX"))
 TX_pwsids <- unique(TX_sab$pwsid)
 # grabbing block crosswalks from the pwsids: 
 TX_cross <- download_blockcrosswalk(pwsids = TX_pwsids)
-# grabbing SDWIS data - currently looking at Fluoride and Chlorine violations (1025 and 0999 respectively)
+TX_cross <- TX_cross %>% mutate(census_block = as.character(census_block),
+                    census_block = case_when(
+                      str_length(census_block) == 14 ~ paste0(0, census_block),
+                      TRUE ~ census_block
+                    ))
+
+# grabbing SDWIS data - currently looking at Fluoride and Chlorine violations 
+# (1025 and 0999 respectively)
 TX_sdwis <- download_SDWIS(pwsids = TX_pwsids, 
                            cont_code = c("1025", "0999"))
 # census data 
@@ -51,6 +58,10 @@ TX_census <- tidycensus::get_decennial(
 Data merging & crosswalking: 
 ```{r}
 ## Grabbing race statistics for pwsids: ########################################
+# TODO: Note that the crosswalk method will change based on our validation 
+# analysis !! 
+# TODO: grab east TX specific counties 
+
 # crosswalking TX sabs with census racial info:
 TX_census_wide <- pivot_wider(TX_census, 
                               names_from = c("variable"), 
@@ -84,6 +95,8 @@ TX_census_sdwis <- merge(TX_pwsid_census_tidy, TX_sdwis, all = T)
 ## SRF data tidying ############################################################
 
 
+## counties in East TX #########################################################
+
 
 ## SDWIS data tidying ##########################################################
 # finding the total number of violations (need to also standardize for year and
@@ -92,24 +105,38 @@ TX_violations <- TX_sdwis %>%
   group_by(pwsid, primary_source_code) %>%
   summarize(total_viol = length(unique(violation_id)))
 # grabbing geoms for mapping: 
-TX_violations_tidy <- merge(TX_pwsid_geoms, TX_violations, all = T)
-
+TX_violations_tidy <- merge(TX_sab[,c("pwsid")], TX_violations, all = T)
 ```
 
 Maps & Plots (QA/QC)
 ```{r}
 ## QA/QC #####################################################################
+# TODO: add how many pwsids have SDWIS and census population deltas greater 
+# than X
+
 # creating a diagnostic log: 
 diag_log <- data.frame(diagnostic = "") %>%
-  mutate(zero_sdwis_pop = sum(TX_pwsid_census_tidy$population_served_count == 0, 
-                              na.rm = TRUE), 
+  mutate(na_pwsid = sum(is.na(TX_pwsid_census_tidy$pwsid)), 
+         na_serv_connections = sum(is.na(TX_pwsid_census_tidy$service_connections_count)),
          na_sdwis_pop = sum(is.na(TX_pwsid_census_tidy$population_served_count)), 
-         # where there are empty geometries - in the original TX_sab dataset 
-         empty_geoms = sum(sf::st_is_empty(TX_pwsid_census_tidy)), 
-         na_census_data = sum(is.na(TX_pwsid_census_tidy$total_pop)), 
+         zero_sdwis_pop = sum(TX_pwsid_census_tidy$population_served_count == 0, 
+                              na.rm = TRUE), 
          zero_area = sum(TX_pwsid_census_tidy$area_miles == 0,
-         na.rm = TRUE)) %>%
-  select(-diagnostic)
+                         na.rm = TRUE), 
+         zero_pop_density = sum(TX_pwsid_census_tidy$pop_density %in% c(0, "NaN", "Inf"),
+                                na.rm = TRUE), 
+         na_cesus_pop = sum(is.na(TX_pwsid_census_tidy$total_pop)), 
+         zero_census_pop = sum(TX_pwsid_census_tidy$total_pop == 0, 
+                               na.rm = TRUE), 
+         empty_geoms = sum(sf::st_is_empty(TX_pwsid_census_tidy))) %>%
+  select(-diagnostic) %>%
+  pivot_longer(., cols = everything())
+
+# how does our pwsids compare to other websites? 
+# 4552 sabs based on: https://www3.twdb.texas.gov/apps/waterserviceboundaries
+# length(unique(TX_sab$pwsid))  # 4586 but the website above might've filtered 
+# data that have at least 15 service connections or serve at least 
+# 25 people at least 60 days out of the year 
 
 ## Map of pwsids and % poc ####################################################
 # converting to sf, transformations, and filtering 
@@ -132,7 +159,8 @@ leaflet() %>%
               highlightOptions = highlightOptions(color = "grey", weight = 2,
                                                   bringToFront = TRUE), 
               label = paste0("pwsid: ", TX_pwsid_census_tidy$pwsid, 
-                             " / poc %: ", round(TX_pwsid_census_tidy$poc_alone*100, 2))) %>%
+                             " / poc %: ", 
+                             round(TX_pwsid_census_tidy$poc_alone*100, 2))) %>%
     addLegend("bottomright", 
             pal = poc_pal, 
             values = TX_pwsid_census_tidy$poc_alone,
