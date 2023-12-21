@@ -12,6 +12,7 @@ library(leaflet)
 library(sf)
 library(aws.s3)
 library(janitor)
+library(rvest)
 ```
 
 Sourcing downloaders: 
@@ -62,12 +63,18 @@ Data merging & crosswalking:
 ## Grabbing race statistics for pwsids: ########################################
 # TODO: Note that the crosswalk method will change based on our validation 
 # analysis !! 
-# TODO: Grab counties in east TX!
 
-# crosswalking TX sabs with census racial info:
+# TODO: Flag for rural or non-rural here? 
+
+# grabbing counties: 
+counties <- unlist(strsplit(TX_census$NAME, split = ","))
+TX_census$counties <- trimws(counties[seq(4, length(counties), by = 5)])
+
+# crosswalking TX sabs with census demographic info:
 TX_census_wide <- pivot_wider(TX_census, 
                               names_from = c("variable"), 
                               values_from = c("value"))
+
 # removing extra information before the merge: 
 TX_census_wide <- subset(TX_census_wide, select = -c(NAME, geometry))
 # merging sab pws crosswalk with census stats: 
@@ -166,7 +173,6 @@ leaflet() %>%
             opacity = 1)
 
 ## Map of pwsids and # SDWIS violations ########################################
-## SDWIS data tidying ##########################################################
 # finding the total number of violations (need to also standardize for year and
 # how long the system has been operating for):
 TX_violations <- TX_sdwis %>%
@@ -206,4 +212,16 @@ leaflet() %>%
 East TX 
 ```{r}
 ## zoom in on east TX data here 
+# TODO: Grab counties in east TX!
+# webpage scraping for TX counties: 
+url <- "https://www.east-texas.com/east-texas-county-governments.htm"
+df <- url %>% 
+  read_html() %>% 
+  html_nodes("table") %>% 
+  html_table(fill = T) 
+# cleaning: 
+counties <- df[[4]] %>%
+  janitor::row_to_names(row_number = 1) %>%
+  janitor::clean_names() %>%
+  filter(county_name != "Total - 38 Counties")
 ```
