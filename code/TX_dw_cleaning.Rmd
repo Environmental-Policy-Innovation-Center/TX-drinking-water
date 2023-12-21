@@ -12,7 +12,7 @@ library(leaflet)
 library(sf)
 library(aws.s3)
 library(janitor)
-library(rvest)
+library(rvest) # only used in webpage scraping 
 ```
 
 Sourcing downloaders: 
@@ -74,7 +74,6 @@ TX_census$counties <- trimws(counties[seq(4, length(counties), by = 5)])
 TX_census_wide <- pivot_wider(TX_census, 
                               names_from = c("variable"), 
                               values_from = c("value"))
-
 # removing extra information before the merge: 
 TX_census_wide <- subset(TX_census_wide, select = -c(NAME, geometry))
 # merging sab pws crosswalk with census stats: 
@@ -133,7 +132,7 @@ diag_log <- data.frame(diagnostic = "") %>%
          zero_census_pop = sum(TX_pwsid_census_tidy$total_pop == 0, 
                                na.rm = TRUE), 
          empty_geoms = sum(sf::st_is_empty(TX_pwsid_census_tidy))) %>%
-  # insert some stats for PPL and SDWIS stats here
+  # TODO: insert some stats for PPL and SDWIS stats here
   select(-diagnostic) %>%
   pivot_longer(., cols = everything())
 
@@ -212,16 +211,19 @@ leaflet() %>%
 East TX 
 ```{r}
 ## zoom in on east TX data here 
-# TODO: Grab counties in east TX!
-# webpage scraping for TX counties: 
+# webpage scraping for TX counties in East Texas: 
 url <- "https://www.east-texas.com/east-texas-county-governments.htm"
-df <- url %>% 
+tx_counties_list <- url %>% 
   read_html() %>% 
   html_nodes("table") %>% 
   html_table(fill = T) 
 # cleaning: 
-counties <- df[[4]] %>%
+east_TX_counties <- tx_counties_list[[4]] %>%
   janitor::row_to_names(row_number = 1) %>%
   janitor::clean_names() %>%
   filter(county_name != "Total - 38 Counties")
+# filtering census data for just east Texas counties:
+eastTX <- TX_census_wide %>%
+  filter(counties %in% paste(east_TX_counties$county_name, "County"))
+
 ```
