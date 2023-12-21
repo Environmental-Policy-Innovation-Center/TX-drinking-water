@@ -11,6 +11,7 @@ library(tidyverse)
 library(leaflet)
 library(sf)
 library(aws.s3)
+library(janitor)
 ```
 
 Sourcing downloaders: 
@@ -25,19 +26,16 @@ Grabbing data from APIs:
 TX_sab <- download_sab(states = c("TX"))
 # making note the of the pwsids located in TX: 
 TX_pwsids <- unique(TX_sab$pwsid)
+
 # grabbing block crosswalks from the pwsids: 
 TX_cross <- download_blockcrosswalk(pwsids = TX_pwsids)
-TX_cross <- TX_cross %>% mutate(census_block = as.character(census_block),
-                    census_block = case_when(
-                      str_length(census_block) == 14 ~ paste0(0, census_block),
-                      TRUE ~ census_block
-                    ))
 
 # grabbing SDWIS data - currently looking at Fluoride and Chlorine violations 
 # (1025 and 0999 respectively)
 TX_sdwis <- download_SDWIS(pwsids = TX_pwsids, 
                            cont_code = c("1025", "0999"))
-# census data 
+
+# census data - grabbing block stats for now 
 TX_census <- tidycensus::get_decennial(
   geography = "block", 
   variables = c(total_pop = "P1_001N", 
@@ -51,10 +49,11 @@ TX_census <- tidycensus::get_decennial(
   geometry = TRUE
 )
 
-# srf data # I think this is the best way to grab srf data but need to check 
-# with Phil 
-TX_PPL <- read_csv(get_object(object = "clean_data/srf_project_priority_lists/web_ppl_combined_clean_v1-1.csv", bucket = "water-team-data")) %>%
-  mutate(across('Project Type', str_replace, 'Other', 'General')) %>%
+# PPL data 
+TX_PPL <- read_csv(get_object(object = "clean_data/srf_project_priority_lists/web_ppl_combined_clean_v1-1.csv", 
+                              bucket = "water-team-data")) %>%
+  mutate(across('Project Type', 
+                str_replace, 'Other', 'General')) %>%
   filter(State == "Texas")
 ```
 
@@ -63,7 +62,7 @@ Data merging & crosswalking:
 ## Grabbing race statistics for pwsids: ########################################
 # TODO: Note that the crosswalk method will change based on our validation 
 # analysis !! 
-# TODO: grab east TX specific counties 
+# TODO: Grab counties in east TX!
 
 # crosswalking TX sabs with census racial info:
 TX_census_wide <- pivot_wider(TX_census, 
@@ -91,24 +90,19 @@ pwsid_census_per$poc_alone <- (1 - pwsid_census_per$white_alone)
 # merging this back with sab dataset for mapping: 
 TX_pwsid_census_tidy <- merge(TX_sab, pwsid_census_per, all = T)
 
-## Merging SDWIS, sabs, census, and crosswalk ################################## 
+## Merging SDWIS, sabs, census, and srf ######################################## 
+## NOTE: add some more SDWIS stats at this step (i.e, year, decade, length of 
+# violation, etc.)
 TX_census_sdwis <- merge(TX_pwsid_census_tidy, TX_sdwis, all = T)
+
+## SRF data tidying
+TX_ppl_tidy <- TX_PPL %>%
+  clean_names()
+# merging census, sdwis, and ppl data into one mega data frame: 
+TX_cen_sdwis_ppl <- merge(TX_census_sdwis, TX_ppl_tidy, by = "pwsid", 
+                          all = TRUE)
 ## NOTE: this could then write to the data lake using the aws functions 
-
-## SRF data tidying ############################################################
-
-
-## counties in East TX #########################################################
-
-
-## SDWIS data tidying ##########################################################
-# finding the total number of violations (need to also standardize for year and
-# how long the system has been operating for):
-TX_violations <- TX_sdwis %>%
-  group_by(pwsid, primary_source_code) %>%
-  summarize(total_viol = length(unique(violation_id)))
-# grabbing geoms for mapping: 
-TX_violations_tidy <- merge(TX_sab[,c("pwsid")], TX_violations, all = T)
+# contains pwsid-level demographic information, SDWIS violations, and srf data
 ```
 
 Maps & Plots (QA/QC)
@@ -132,6 +126,7 @@ diag_log <- data.frame(diagnostic = "") %>%
          zero_census_pop = sum(TX_pwsid_census_tidy$total_pop == 0, 
                                na.rm = TRUE), 
          empty_geoms = sum(sf::st_is_empty(TX_pwsid_census_tidy))) %>%
+  # insert some stats for PPL and SDWIS stats here
   select(-diagnostic) %>%
   pivot_longer(., cols = everything())
 
@@ -171,6 +166,15 @@ leaflet() %>%
             opacity = 1)
 
 ## Map of pwsids and # SDWIS violations ########################################
+## SDWIS data tidying ##########################################################
+# finding the total number of violations (need to also standardize for year and
+# how long the system has been operating for):
+TX_violations <- TX_sdwis %>%
+  group_by(pwsid, primary_source_code) %>%
+  summarize(total_viol = length(unique(violation_id)))
+# grabbing geoms for mapping: 
+TX_violations_tidy <- merge(TX_sab[,c("pwsid")], TX_violations, all = T)
+
 # map of total number of violations for pwsid: 
 viol_pal <- colorNumeric(
   palette = viridis::plasma(6),
@@ -191,5 +195,15 @@ leaflet() %>%
             title = "# violations",
             opacity = 1)
 
+# SDWIS violations by POC: 
+# ggplot(TX_census_sdwis, aes(x = poc_alone, y = (violation_id), color = pwsid)) + 
+#   geom_point() + 
+#   theme_bw() + 
+#   theme(legend.position = "none")
 ```
 
+
+East TX 
+```{r}
+## zoom in on east TX data here 
+```
