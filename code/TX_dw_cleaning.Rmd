@@ -12,7 +12,7 @@ library(leaflet)
 library(sf)
 library(aws.s3)
 library(janitor)
-library(rvest) # only used in webpage scraping 
+library(rvest)
 ```
 
 Sourcing downloaders: 
@@ -37,6 +37,7 @@ TX_sdwis <- download_SDWIS(pwsids = TX_pwsids,
                            cont_code = c("1025", "0999"))
 
 # census data - grabbing block stats for now 
+# TODO: change this to acs5 and block-group stats for MHI, age, etc. 
 TX_census <- tidycensus::get_decennial(
   geography = "block", 
   variables = c(total_pop = "P1_001N", 
@@ -49,21 +50,12 @@ TX_census <- tidycensus::get_decennial(
   year = 2020,
   geometry = TRUE
 )
-
-# PPL data 
-TX_PPL <- read_csv(get_object(object = "clean_data/srf_project_priority_lists/web_ppl_combined_clean_v1-1.csv", 
-                              bucket = "water-team-data")) %>%
-  mutate(across('Project Type', 
-                str_replace, 'Other', 'General')) %>%
-  filter(State == "Texas")
 ```
 
 Data merging & crosswalking: 
 ```{r}
 ## Grabbing race statistics for pwsids: ########################################
-# TODO: Note that the crosswalk method will change based on our validation 
-# analysis !! 
-
+# TODO: change this to areal interpolation methods 
 # TODO: Flag for rural or non-rural here? 
 
 # grabbing counties: 
@@ -91,24 +83,18 @@ pwsid_census <- group_by(pwsid_weighted_census, pwsid) %>%
   summarize(across(total_pop:hisp_alone, ~round(sum(.), 0)))
 # calculating percentage of demographic groups: 
 pwsid_census_per <- pwsid_census %>%
-  mutate_at(vars(black_alone:hisp_alone),  ~(./total_pop))
+  mutate_at(vars(black_alone:hisp_alone), ~(./total_pop))
 pwsid_census_per$poc_alone <- (1 - pwsid_census_per$white_alone)
 # merging this back with sab dataset for mapping: 
 TX_pwsid_census_tidy <- merge(TX_sab, pwsid_census_per, all = T)
 
 ## Merging SDWIS, sabs, census, and srf ######################################## 
-## NOTE: add some more SDWIS stats at this step (i.e, year, decade, length of 
+# TODO: add some more SDWIS stats at this step (i.e, year, decade, length of 
 # violation, etc.)
 TX_census_sdwis <- merge(TX_pwsid_census_tidy, TX_sdwis, all = T)
 
-## SRF data tidying
-TX_ppl_tidy <- TX_PPL %>%
-  clean_names()
-# merging census, sdwis, and ppl data into one mega data frame: 
-TX_cen_sdwis_ppl <- merge(TX_census_sdwis, TX_ppl_tidy, by = "pwsid", 
-                          all = TRUE)
 ## NOTE: this could then write to the data lake using the aws functions 
-# contains pwsid-level demographic information, SDWIS violations, and srf data
+# contains pwsid-level demographic information and SDWIS violations
 ```
 
 Maps & Plots (QA/QC)
@@ -207,10 +193,35 @@ leaflet() %>%
 #   theme(legend.position = "none")
 ```
 
+_______________________________________________________________________________
+Loading in TX data
+```{r}
+# PPL data & tidying 
+TX_PPL <- read_csv(get_object(object = "clean_data/srf_project_priority_lists/web_ppl_combined_clean_v1-1.csv", 
+                              bucket = "water-team-data")) %>%
+  mutate(across('Project Type', 
+                str_replace, 'Other', 'General')) %>%
+  filter(State == "Texas") %>%
+  janitor::clean_names()
+
+# # merging census, sdwis, and ppl data into one mega data frame: 
+# TX_cen_sdwis_ppl <- merge(TX_census_sdwis, TX_ppl_tidy, by = "pwsid", 
+#                           all = TRUE)
+# 
+
+# attempting to read groundwater data from TWDB
+# gw <- read_sf("./data/state_raw/TWDB_Groundwater/TWDB_Groundwater.shp")
+# leaflet() %>%
+#   addProviderTiles(providers$CartoDB.VoyagerNoLabels, group = "Toner Lite")  %>%
+#   addMarkers(data = gw)
+
+
+
+```
+
 
 East TX 
 ```{r}
-## zoom in on east TX data here 
 # webpage scraping for TX counties in East Texas: 
 url <- "https://www.east-texas.com/east-texas-county-governments.htm"
 tx_counties_list <- url %>% 
@@ -222,8 +233,4 @@ east_TX_counties <- tx_counties_list[[4]] %>%
   janitor::row_to_names(row_number = 1) %>%
   janitor::clean_names() %>%
   filter(county_name != "Total - 38 Counties")
-# filtering census data for just east Texas counties:
-eastTX <- TX_census_wide %>%
-  filter(counties %in% paste(east_TX_counties$county_name, "County"))
-
 ```
