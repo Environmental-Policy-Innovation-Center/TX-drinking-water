@@ -48,8 +48,8 @@ po/*~
 # RStudio Connect folder
 rsconnect/
 
-# Locally-stored data files: 
-data/raw/
+# Locally-stored large data files: 
+data/national_raw/
 
 # Batch download logs: 
 code/download_handlers.log
