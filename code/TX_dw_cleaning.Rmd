@@ -19,21 +19,21 @@ library(mapview)
 
 Sourcing downloaders: 
 ```{r}
-source("~/TX-drinking-water/code/download_handlers/download_sabcrosswalk.R")
-source("~/TX-drinking-water/code/download_handlers/download_SDWIS.R")
+source("./code/download_handlers/get_sab.R")
+source("./code/download_handlers/get_SDWIS.R")
 ```
 
 Grabbing data from APIs: 
 ```{r}
 # grabbing sabs: 
-sab <- download_sab(states = c("TX"))
+sab <- get_sab(states = c("TX"), crs = ("ESRI:102296"))
 # making note the of the pwsids located in TX: 
 pwsids <- unique(sab$pwsid)
 
-# grabbing SDWIS data - currently looking at Fluoride and Chlorine violations 
-# (1025 and 0999 respectively)
-sdwis <- download_SDWIS(pwsids = pwsids, 
-                        cont_code = c("1025", "0999"))
+# grabbing SDWIS data - currently looking at all of them by leaving cont_code
+# as blank
+sdwis <- get_SDWIS(pwsids = pwsids, 
+                   cont_code = c())
 
 # census data - grabbing block group stats for now 
 # vars_acs <- load_variables(year = 2021, "acs5")
@@ -63,7 +63,7 @@ census <- tidycensus::get_acs(
 )
 ```
 
-Data merging & crosswalking: 
+Data merging & crosswalking - likely wrapped into areal interpolation function
 ```{r}
 ## Calculating census stats for pwsids: ########################################
 # TODO: Flag for rural or non-rural here? 
@@ -78,9 +78,9 @@ census_wide <- pivot_wider(census_tidy,
                            names_from = c("variable"), 
                            values_from = c("estimate", "moe"))  %>%
   st_transform(crs="ESRI:102296")
-# sab crs transformation: 
-sab_tidy <- sab %>%
-  st_transform(crs="ESRI:102296")
+
+# sab copying: 
+sab_tidy <- sab 
 
 # sab and block group areal interpolation - note this takes quite a bit of time 
 # to run
@@ -121,41 +121,48 @@ sab_census <- merge(sab_bg_ext, sab_census_per,
 ## Merging SDWIS, sabs, census ################################################# 
 # tidying census data for the year, decade, and duration of violation
 sdwis_tidy <- sdwis
-sdwis_tidy <- sdwis_tidy %>%
-  mutate(across(compl_per_begin_date:compl_per_end_date, 
-                ~ as.Date(.x, tryFormats = c("%Y-%m-%d"))), 
-         viol_year = year(compl_per_begin_date), 
-         viol_decade = viol_year - viol_year %% 10,
-         viol_dur = compl_per_end_date - compl_per_begin_date)
 
 # merging it all together: 
 census_sdwis <- merge(sab_census, sdwis_tidy, all = T)
 ## NOTE: this could then write to the data lake using the aws functions 
 # contains pwsid-level demographic information and SDWIS violations
 # saving locally for now 
-write.csv(census_sdwis, "./data/national_raw/pwsid_census_sdwis.csv")
+write.csv(census_sdwis, "./data/raw/national/pwsid_census_sdwis.csv")
 ```
 
-Maps & Plots (QA/QC)
+Maps & Plots (QA/QC) - likely wrapped into one single R function 
 ```{r}
 ## QA/QC #####################################################################
 # creating a diagnostic log: 
+census_sdwis_stats <- census_sdwis %>%
+  group_by(pwsid, primary_source_code) %>%
+  mutate(population_served_count = as.numeric(population_served_count)) %>%
+  summarize(service_connections = mean(service_connections_count),
+            sdwis_total_pop = mean(population_served_count), 
+            area = mean(area_miles), 
+            pop_density = mean(pop_density), 
+            census_total_pop = mean(estimate_total_pop),
+            mean_POC_per = mean(estimate_poc_alone_per), 
+            num_viols = length(unique(violation_id)))
+write.csv(census_sdwis_stats, "./data/raw/national/sab_sdwis_stats.csv")
+
+# quick stats to get an idea of what's happening at a glance: 
 diag_log <- data.frame(diagnostic = "") %>%
-  mutate(na_pwsid = sum(is.na(census_sdwis$pwsid)), 
-         na_serv_connections = sum(is.na(census_sdwis$service_connections_count)),
-         na_sdwis_pop = sum(is.na(census_sdwis$population_served_count)), 
-         zero_sdwis_pop = sum(census_sdwis$population_served_count == 0, 
+  mutate(na_pwsid = sum(is.na(census_sdwis_stats$pwsid)), 
+         na_serv_connections = sum(is.na(census_sdwis_stats$service_connections)),
+         na_sdwis_pop = sum(is.na(census_sdwis_stats$sdwis_total_pop)), 
+         zero_sdwis_pop = sum(census_sdwis_stats$sdwis_total_pop == 0, 
                               na.rm = TRUE), 
-         zero_area = sum(census_sdwis$area_miles == 0,
+         zero_area = sum(census_sdwis_stats$area == 0,
                          na.rm = TRUE), 
-         zero_pop_density = sum(census_sdwis$pop_density %in% 
+         zero_pop_density = sum(census_sdwis_stats$pop_density %in% 
                                   c(0, "NaN", "Inf"),
                                 na.rm = TRUE), 
-         na_cesus_pop = sum(is.na(census_sdwis$estimate_total_pop)), 
-         zero_census_pop = sum(round(census_sdwis$estimate_total_pop, 0) %in% 
+         na_cesus_pop = sum(is.na(census_sdwis_stats$census_total_pop)), 
+         zero_census_pop = sum(round(census_sdwis_stats$census_total_pop, 0) %in% 
                                  c(0, "NaN", "Inf"), 
                                na.rm = TRUE), 
-         empty_geoms = sum(sf::st_is_empty(census_sdwis))) %>%
+         empty_geoms = sum(sf::st_is_empty(census_sdwis_stats))) %>%
   select(-diagnostic) %>%
   pivot_longer(., cols = everything())
 # moving this to results
@@ -188,7 +195,7 @@ poc_map <- leaflet() %>%
                                                   bringToFront = TRUE), 
               label = paste0("pwsid: ", sab_census_sf$pwsid, 
                              " / poc %: ", 
-                             sab_census_sf$estimate_poc_alone_per)) %>%
+                             round(sab_census_sf$estimate_poc_alone_per, 0))) %>%
     addLegend("bottomright", 
             pal = poc_pal, 
             values = sab_census_sf$estimate_poc_alone_per,
@@ -200,11 +207,14 @@ mapview::mapshot2(poc_map, file = "./results/pwsid_poc_map.png")
 # finding the total number of violations (need to also standardize for year and
 # how long the system has been operating for):
 violations <- sdwis_tidy %>%
-  group_by(pwsid, primary_source_code) %>%
+  group_by(pwsid) %>%
   summarize(total_viol = length(unique(violation_id)))
 # grabbing geoms for mapping: 
-violations_geoms <- merge(sab[,c("pwsid")], violations, all = T)
-
+violations_geoms <- merge(sab[,c("pwsid")], violations, all = T) %>%
+  st_as_sf(.) %>%
+  st_transform(., '+proj=longlat +datum=WGS84') %>% 
+  filter(!st_is_empty(.))
+  
 # map of total number of violations for pwsid: 
 viol_pal <- colorNumeric(
   palette = viridis::plasma(6),
@@ -227,15 +237,24 @@ viol_map <- leaflet() %>%
 mapview::mapshot2(viol_map, file = "./results/pwsid_violation_map.png")
 
 # SDWIS violations by % POC: 
-violations_poc <- census_sdwis %>%
-  group_by(pwsid) %>%
-  summarize(total_viol = length(unique(violation_id)), 
-            poc_per = mean(estimate_poc_alone_per))
-ggplot(violations_poc, aes(x = poc_per, y = total_viol)) +
+poc_violations <- ggplot(census_sdwis_stats, 
+       aes(x = mean_POC_per, 
+           y = num_viols)) +
   geom_point() +
   theme_bw() +
-  theme(legend.position = "none")
+  theme(legend.position = "none") + 
+  facet_wrap(~primary_source_code, ncol = 1, scales = "free") + 
+  labs(x = "Percent Person of Color", y = "Number of Violations")
+ggsave("./results/poc_violation_plot.png", poc_violations)
 
+pop_violations <- ggplot(census_sdwis_stats, 
+                         aes(x = sdwis_total_pop, y = num_viols, 
+                             color = num_viols)) +
+  geom_point() +
+  theme_bw() +
+  theme(legend.position = "none") +
+  labs(x = "Total Population", y = "Number of Violations")
+ggsave("./results/pop_violation_plot.png", pop_violations)
 ```
 
 _______________________________________________________________________________

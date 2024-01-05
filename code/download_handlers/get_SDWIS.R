@@ -6,8 +6,8 @@
 # It's  more efficient to pull all data from the api and then filter down - 
 # Corrected from: https://github.com/Environmental-Policy-Innovation-Center/water_team/blob/main/data/raw_data/sdwis/sdwis_violation/downloader_sdwis_violation.Rmd
 ################################################################################
-# download_SDWIS(pwsids = c("TX0740039", "TX0750003", "TX0650002"), 
-#                cont_code = c("1025", "0999"))
+# get_SDWIS(pwsids = c("TX0740039", "TX0750003", "TX0650002"), 
+#                cont_code = c())
 # 
 # Function to download SDWIS violation data for certain pwsids and contaminants. 
 #
@@ -22,16 +22,16 @@
 #            example. 
 #   cont_code: Character vector containing codes of contaminants of interest. 
 #              Must be associated with a valid contaminant code recognized by 
-#              the EPA. Default is set to Chloride and Fluoride ("1025", "0999")
+#              the EPA. Default is set to include all violations. 
 # 
 # Output: data frame containing all contaminant records for the pwsid and 
 #         contaminants of interest, 
 # 
-# Example of use: download_SDWIS(pwsids = c("TX0740039", "TX0750003", "TX0650002"), 
+# Example of use: get_SDWIS(pwsids = c("TX0740039", "TX0750003", "TX0650002"), 
 #                cont_code = c("1025", "0999"))
 ################################################################################
-download_SDWIS <- function(pwsids = c("TX0740039", "TX0750003", "TX0650002"), 
-                           cont_code = c("1025", "0999")){
+get_SDWIS <- function(pwsids = c("TX0740039", "TX0750003", "TX0650002"), 
+                      cont_code = c()){
   
   # Options here to handle scientific notation errors in web service requests: 
   options("scipen"=10, "digits"=4)
@@ -58,10 +58,21 @@ download_SDWIS <- function(pwsids = c("TX0740039", "TX0750003", "TX0650002"),
   }
   
   print("Final filtering")
-  # filtering data based on provided arguments: 
+  
+  # tidying dates and adding year, decade, and length of violation: 
   sdwis_filt <- violations_raw %>%
     filter(pwsid %in% pwsids) %>%
-    filter(contaminant_code %in% cont_code)
+    mutate(across(compl_per_begin_date:compl_per_end_date, 
+                  ~ as.Date(.x, tryFormats = c("%Y-%m-%d"))), 
+           viol_year = year(compl_per_begin_date), 
+           viol_decade = viol_year - viol_year %% 10,
+           viol_dur = compl_per_end_date - compl_per_begin_date)
+  
+  if(length(cont_code != 0)){
+    # filtering data based on provided arguments: 
+    sdwis_filt <- sdwis_filt %>%
+      filter(contaminant_code %in% cont_code)
+  }
   
   # return: 
   return(sdwis_filt)

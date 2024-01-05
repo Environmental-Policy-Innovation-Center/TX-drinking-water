@@ -8,19 +8,20 @@
 # Function to download service area boundaries for a particular state. 
 #
 # Dependencies: 
-#   dplyr filter, mutate
-#   sf st_area
+#   dplyr filter, mutate, %>%
+#   sf st_area, st_read, st_transform
 # 
 # Inputs: 
 #   states:  character vector containing the abbreviation of the states of 
 #            interest. Default is states = "TX"
+#   crs: coordinate reference system to use 
 # 
 # Output: data frame containing pwsid data and population served based on 
 #         SDWIS data
 # 
-# Example of use: download_sab(states = ("TX"))
+# Example of use: download_sab(states = ("TX"), crs = ("ESRI:102296"))
 ################################################################################
-download_sab <- function(states = ("TX")){
+get_sab <- function(states = ("TX"), crs = ("ESRI:102296")){
   library(dplyr)
   ## Service area boundaries: ##
   sab <- sf::st_read("https://www.hydroshare.org/resource/9ebc0a0b43b843b9835830ffffdd971e/data/contents/temm.gpkg")
@@ -29,10 +30,16 @@ download_sab <- function(states = ("TX")){
     filter(state_code %in% states) %>%
     mutate(area_miles = as.numeric(sf::st_area(.))) %>%
     mutate(area_miles = area_miles/27880000) %>%
-    mutate(pop_density = population_served_count / area_miles)
+    mutate(pop_density = population_served_count / area_miles) %>%
+    sf::st_transform(crs = crs) %>%
+    mutate(population_served_count = as.numeric(population_served_count))
   return(sab_states)
 }
 
+
+###
+# DEPRECATED - moving to areal interpolation methods
+###
 ################################################################################
 # download_blockcrosswalk(pwsids = c("TX0610218", "TX0610220", "TX0610223"))
 # 
