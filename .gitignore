@@ -49,7 +49,7 @@ po/*~
 rsconnect/
 
 # Locally-stored large data files: 
-data/national_raw/
+data/raw/national
 
 # Batch download logs: 
 code/download_handlers.log
