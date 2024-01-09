@@ -19,8 +19,9 @@ library(mapview)
 
 Sourcing downloaders: 
 ```{r}
-source("./code/download_handlers/get_sab.R")
-source("./code/download_handlers/get_SDWIS.R")
+source("./code/functions/get_sab.R")
+source("./code/functions/get_SDWIS.R")
+source("./code/functions/interp_sab_census.R")
 ```
 
 Grabbing data from APIs: 
@@ -66,57 +67,9 @@ census <- tidycensus::get_acs(
 Data merging & crosswalking - likely wrapped into areal interpolation function
 ```{r}
 ## Calculating census stats for pwsids: ########################################
-# TODO: Flag for rural or non-rural here? 
-
-# adding counties
-census_tidy <- census
-counties <- unlist(strsplit(census_tidy$NAME, split = ","))
-census_tidy$counties <- trimws(counties[grepl("County", counties)])
-
-# tidying census data and crs transformation: 
-census_wide <- pivot_wider(census_tidy, 
-                           names_from = c("variable"), 
-                           values_from = c("estimate", "moe"))  %>%
-  st_transform(crs="ESRI:102296")
-
-# sab copying: 
-sab_tidy <- sab 
-
-# sab and block group areal interpolation - note this takes quite a bit of time 
-# to run
-# TODO: brainstorm how to recalculate moe and mhi.. summing them is wrong. 
-# Intensive interpolation also isn't right because they're not density or 
-# % values... this pub notes that this method for MHI doesn't exist yet
-# https://www.mdpi.com/2220-9964/8/7/302
-census_vars <- names(census_wide)
-ext_varList <- census_vars[grepl("estimate", census_vars)]
-areal::ar_validate(source = census_wide,
-                   target = sab_tidy,
-                   varList = ext_varList,
-                   method="aw",
-                   verbose=TRUE)
-# using the weight = "total" might be more appropriate, since we don't want to 
-# allocate EVERY individual within a census tract into a pwsid 
-sab_bg_ext <- areal::aw_interpolate(sab_tidy, tid = "pwsid", 
-                                    source = census_wide, 
-                                    sid = "GEOID", 
-                                    weight = "total", 
-                                    output = "sf", 
-                                    extensive = ext_varList)
-# calculating percentage across census vars: 
-sab_census_per <- sab_bg_ext %>%
-  as.data.frame(.) %>%
-  select(starts_with(c("estimate", "pwsid"))) %>%
-  select(-c("estimate_mhi")) %>%
-  mutate_at(vars(!c("estimate_total_pop", "pwsid")), ~((./estimate_total_pop)*100)) %>%
-  relocate("pwsid") %>%
-  mutate(estimate_poc_alone = (100 - estimate_white_alone))
-# renaming columns for merging purposes: 
-colnames(sab_census_per) <- paste0(colnames(sab_census_per), "_per")
-
-# merging this back into the original interpolation: 
-sab_census <- merge(sab_bg_ext, sab_census_per, 
-      by.x = "pwsid", by.y = "pwsid_per")
+sab_census <- interp_sab_census(census_df = census, sab_df = sab, 
+                                total_pop_var = "estimate_total_pop", 
+                                white_alone_var = "estimate_white_alone")
 
 ## Merging SDWIS, sabs, census ################################################# 
 # tidying census data for the year, decade, and duration of violation
@@ -144,7 +97,7 @@ census_sdwis_stats <- census_sdwis %>%
             census_total_pop = mean(estimate_total_pop),
             mean_POC_per = mean(estimate_poc_alone_per), 
             num_viols = length(unique(violation_id)))
-write.csv(census_sdwis_stats, "./data/raw/national/sab_sdwis_stats.csv")
+write.csv(census_sdwis_stats, "./data/raw/national/sab_sdwis_summary.csv")
 
 # quick stats to get an idea of what's happening at a glance: 
 diag_log <- data.frame(diagnostic = "") %>%
@@ -166,7 +119,7 @@ diag_log <- data.frame(diagnostic = "") %>%
   select(-diagnostic) %>%
   pivot_longer(., cols = everything())
 # moving this to results
-write.csv(diag_log, "./results/diagnostic_log.csv")
+write.csv(diag_log, "./results/qa_qc/diagnostic_log.csv")
 
 # how does our pwsids compare to other websites? 
 # 4552 sabs based on: https://www3.twdb.texas.gov/apps/waterserviceboundaries
@@ -201,7 +154,7 @@ poc_map <- leaflet() %>%
             values = sab_census_sf$estimate_poc_alone_per,
             title = "% POC",
             opacity = 1)
-mapview::mapshot2(poc_map, file = "./results/pwsid_poc_map.png")
+mapview::mapshot2(poc_map, file = "./results/qa_qc/pwsid_poc_map.png")
 
 ## Map of pwsids and # SDWIS violations ########################################
 # finding the total number of violations (need to also standardize for year and
@@ -234,7 +187,7 @@ viol_map <- leaflet() %>%
             values = violations_geoms$total_viol,
             title = "# violations",
             opacity = 1)
-mapview::mapshot2(viol_map, file = "./results/pwsid_violation_map.png")
+mapview::mapshot2(viol_map, file = "./results/qa_qc/pwsid_violation_map.png")
 
 # SDWIS violations by % POC: 
 poc_violations <- ggplot(census_sdwis_stats, 
@@ -245,7 +198,7 @@ poc_violations <- ggplot(census_sdwis_stats,
   theme(legend.position = "none") + 
   facet_wrap(~primary_source_code, ncol = 1, scales = "free") + 
   labs(x = "Percent Person of Color", y = "Number of Violations")
-ggsave("./results/poc_violation_plot.png", poc_violations)
+ggsave("./results/qa_qc/poc_violation_plot.png", poc_violations)
 
 pop_violations <- ggplot(census_sdwis_stats, 
                          aes(x = sdwis_total_pop, y = num_viols, 
@@ -254,7 +207,7 @@ pop_violations <- ggplot(census_sdwis_stats,
   theme_bw() +
   theme(legend.position = "none") +
   labs(x = "Total Population", y = "Number of Violations")
-ggsave("./results/pop_violation_plot.png", pop_violations)
+ggsave("./results/qa_qc/pop_violation_plot.png", pop_violations)
 ```
 
 _______________________________________________________________________________
@@ -264,7 +217,8 @@ _______________________________________________________________________________
 Loading in TX data
 ```{r}
 # PPL data & tidying 
-TX_PPL <- aws.s3::s3read_using(read.csv, object = "s3://water-team-data/clean_data/srf_project_priority_lists/web_ppl_combined_clean_v1-1.csv") %>%
+TX_PPL <- aws.s3::s3read_using(read.csv, 
+                               object = "s3://water-team-data/clean_data/srf_project_priority_lists/web_ppl_combined_clean_v1-1.csv") %>%
   mutate(across('Project.Type', 
                 str_replace, 'Other', 'General')) %>%
   filter(State == "Texas") %>%
