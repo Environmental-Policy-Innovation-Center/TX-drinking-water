@@ -41,7 +41,7 @@ get_SDWIS <- function(pwsids = c("TX0740039", "TX0750003", "TX0650002"),
   violation_url <- "https://data.epa.gov/efservice/VIOLATION/COUNT"
   n_records_vi_xml <- xml2::read_xml(violation_url)
   n_records_vi_ls <- xml2::as_list(n_records_vi_xml)
-  n_records_vi <- as.numeric(n_records_vi_ls$violationList$violation$TOTALQUERYRESULTS)
+  n_records_vi <- as.numeric(n_records_vi_ls$violationList$violation$REQUESTRECORDCOUNT)
   # For loop requests records 100,000 to end and appends them to the first 
   # 100,000 records: 
   violations_raw <- data.frame()

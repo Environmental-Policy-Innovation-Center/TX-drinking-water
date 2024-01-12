@@ -1,0 +1,244 @@
+---
+title: "TX Water Data Cleaning & Processing"
+output: html_document
+date: "2023-12-07"
+author: "EmmaLi Tsai" 
+---
+
+Packages: 
+```{r}
+library(tidyverse)
+library(leaflet)
+library(sf)
+library(aws.s3)
+library(janitor)
+library(tidycensus)
+library(areal)
+library(mapview)
+# remotes::install_github("environmental-policy-innovation-center/stateDW", 
+#                         auth_token = "insert-github-pat-here")
+library(stateDW)
+```
+
+Sourcing downloaders: 
+```{r}
+# Migrated to R package workflow but keeping these here as a backup 
+# source("./code/functions/get_sab.R")
+# source("./code/functions/get_SDWIS.R")
+# source("./code/functions/interp_sab_census.R")
+```
+
+Grabbing data from APIs: 
+```{r}
+# grabbing sabs: 
+sab <- get_sab(states = c("TX"), crs = ("ESRI:102296"))
+# making note the of the pwsids located in TX: 
+pwsids <- unique(sab$pwsid)
+
+# grabbing SDWIS data - currently looking at all of them by leaving cont_code
+# as blank
+sdwis <- get_SDWIS(pwsids = pwsids, 
+                   cont_code = c())
+
+# census data - grabbing block group stats for now 
+# vars_acs <- load_variables(year = 2021, "acs5")
+census_vars <- c(total_pop = "B01003_001",
+                 black_alone = "B02001_003", 
+                 asian_alone = "B02001_005", 
+                 white_alone = "B02001_002", 
+                 AIAN_alone = "B02001_004", 
+                 NAPI_alone = "B02001_006", 
+                 other_alone = "B02001_007", 
+                 mixed_alone = "B02001_008",
+                 hisp_alone = "B03003_003", 
+                 mhi = "B19013_001", 
+                 under_6  = "B23008_002", 
+                 over_65 = "B09021_022", 
+                 only_english = "B99162_002", 
+                 other_lang = "B99162_003", 
+                 no_school = "B15003_002", 
+                 prof_degree = "B15003_024", 
+                 foreign = "B99051_005")
+census <- tidycensus::get_acs(
+  geography = "block group", 
+  variables = census_vars, 
+  state = unique(sab$state_code), 
+  year = 2021,
+  geometry = TRUE
+)
+```
+
+Data merging, crosswalking, and listification 
+```{r}
+## Calculating census stats for pwsids: ########################################
+sab_census <- interp_sab_census(census_df = census, sab_df = sab, 
+                                total_pop_var = "estimate_total_pop", 
+                                white_alone_var = "estimate_white_alone")
+
+## Merging SDWIS, sabs, census ################################################# 
+# tidying census data for the year, decade, and duration of violation
+sdwis_tidy <- sdwis 
+
+## Combining data into a list ################################################# 
+TX_data <- list()
+TX_data[[1]] <- sab_census
+TX_data[[2]] <- sdwis_tidy
+# here's how you get the list entry out and into a data frame: 
+sab_census <- do.call(data.frame, TX_data[[1]])
+# data will be plopped here: 
+# https://tech-team-data.s3.amazonaws.com/state-drinking-water/TX/raw/
+```
+
+Maps & Plots (QA/QC) for national data that has been queried to TX 
+```{r}
+## QA/QC #####################################################################
+# grabbing summary stats for the census and sdwis violations:  
+sdwis_viols <- sdwis_tidy %>%
+  group_by(pwsid) %>%
+  summarize(total_viol = length(unique(violation_id)))
+
+# grabbing summary stats for the census and sdwis violations:  
+sab_sdwis_summary <- sab_census %>%
+  group_by(pwsid, primary_source_code) %>%
+  mutate(population_served_count = as.numeric(population_served_count)) %>%
+  summarize(service_connections = mean(service_connections_count),
+            sdwis_total_pop = mean(population_served_count), 
+            area = mean(area_miles), 
+            pop_density = mean(pop_density), 
+            census_total_pop = mean(estimate_total_pop),
+            mean_POC_per = mean(estimate_poc_alone_per)) %>%
+  left_join(., sdwis_viols)
+write.csv(sab_sdwis_summary, "./data/raw/sab_sdwis_summary.csv")
+
+# quick stats to get an idea of what's happening at a glance: 
+# TODO: add number of sabs outside of TX boundary 
+diag_log <- data.frame(diagnostic = "") %>%
+  mutate(na_pwsid = sum(is.na(sab_sdwis_summary$pwsid)), 
+         na_serv_connections = sum(is.na(sab_sdwis_summary$service_connections)),
+         na_sdwis_pop = sum(is.na(sab_sdwis_summary$sdwis_total_pop)), 
+         zero_sdwis_pop = sum(sab_sdwis_summary$sdwis_total_pop == 0, 
+                              na.rm = TRUE), 
+         zero_area = sum(sab_sdwis_summary$area == 0,
+                         na.rm = TRUE), 
+         zero_pop_density = sum(sab_sdwis_summary$pop_density %in% 
+                                  c(0, "NaN", "Inf"),
+                                na.rm = TRUE), 
+         na_cesus_pop = sum(is.na(sab_sdwis_summary$census_total_pop)), 
+         zero_census_pop = sum(round(sab_sdwis_summary$census_total_pop, 0) %in% 
+                                 c(0, "NaN", "Inf"), 
+                               na.rm = TRUE), 
+         empty_geoms = sum(sf::st_is_empty(sab_sdwis_summary))) %>%
+  select(-diagnostic) %>%
+  pivot_longer(., cols = everything())
+# moving this to results
+write.csv(diag_log, "./results/qa_qc/diagnostic_log.csv")
+
+## Map of pwsids and % poc ####################################################
+# converting to sf, transformations, and filtering 
+sab_census_sf <- sab_census %>%
+  st_as_sf(.) %>%
+  st_transform(., '+proj=longlat +datum=WGS84') %>% 
+  filter(!st_is_empty(.))
+
+poc_pal <- colorNumeric(
+  palette = viridis::turbo(6),
+  domain = sab_census_sf$estimate_poc_alone_per)
+poc_map <- leaflet() %>%
+  addProviderTiles(providers$CartoDB.VoyagerNoLabels, group = "Toner Lite")  %>%
+  addPolygons(data = sab_census_sf, 
+              opacity = 9,
+              color = ~poc_pal(estimate_poc_alone_per),
+              weight = 1, 
+              highlightOptions = highlightOptions(color = "grey", weight = 2,
+                                                  bringToFront = TRUE), 
+              label = paste0("pwsid: ", sab_census_sf$pwsid, 
+                             " / poc %: ", 
+                             round(sab_census_sf$estimate_poc_alone_per, 0))) %>%
+    addLegend("bottomright", 
+            pal = poc_pal, 
+            values = sab_census_sf$estimate_poc_alone_per,
+            title = "% POC",
+            opacity = 1)
+mapview::mapshot2(poc_map, file = "./results/qa_qc/pwsid_poc_map.png")
+
+## Map of pwsids and # SDWIS violations ########################################
+# finding the total number of violations (need to also standardize for year and
+# how long the system has been operating for):
+# violations <- sdwis_tidy %>%
+#   group_by(pwsid) %>%
+#   summarize(total_viol = length(unique(violation_id)))
+# grabbing geoms for mapping: 
+violations_geoms <- merge(sab[,c("pwsid")], sdwis_viols, all = T) %>%
+  st_as_sf(.) %>%
+  st_transform(., '+proj=longlat +datum=WGS84') %>% 
+  filter(!st_is_empty(.))
+  
+# map of total number of violations for pwsid: 
+viol_pal <- colorNumeric(
+  palette = viridis::plasma(6),
+  domain = violations_geoms$total_viol)
+viol_map <- leaflet() %>%
+  addProviderTiles(providers$CartoDB.VoyagerNoLabels, group = "Toner Lite")  %>%
+  addPolygons(data = violations_geoms, 
+              opacity = 9,
+              color = ~viol_pal(total_viol),
+              weight = 1, 
+              highlightOptions = highlightOptions(color = "grey", weight = 2,
+                                                  bringToFront = TRUE), 
+              label = paste0("pwsid: ", violations_geoms$pwsid, 
+                             " / violations: ", violations_geoms$total_viol)) %>%
+    addLegend("bottomright", 
+            pal = viol_pal, 
+            values = violations_geoms$total_viol,
+            title = "# violations",
+            opacity = 1)
+mapview::mapshot2(viol_map, file = "./results/qa_qc/pwsid_violation_map.png")
+
+# SDWIS violations by % POC: 
+poc_violations <- ggplot(sab_sdwis_summary, 
+       aes(x = mean_POC_per, y = total_viol, color = primary_source_code)) +
+  geom_point() +
+  theme_bw() +
+  theme(legend.position = "none") + 
+  facet_wrap(~primary_source_code, ncol = 1, scales = "free") + 
+  labs(x = "Percent Person of Color", y = "Number of Violations")
+ggsave("./results/qa_qc/poc_violation_plot.png", poc_violations)
+
+pop_violations <- ggplot(sab_sdwis_summary, 
+                         aes(x = sdwis_total_pop, y = total_viol, 
+                             color = total_viol)) +
+  geom_point() +
+  theme_bw() +
+  theme(legend.position = "none") +
+  labs(x = "Total Population", y = "Number of Violations")
+ggsave("./results/qa_qc/pop_violation_plot.png", pop_violations)
+```
+
+_______________________________________________________________________________
+Start of state-specific code: 
+_______________________________________________________________________________
+Loading in TX data
+```{r}
+# PPL data & tidying 
+TX_PPL <- aws.s3::s3read_using(read.csv, 
+                               object = "s3://water-team-data/clean_data/srf_project_priority_lists/web_ppl_combined_clean_v1-1.csv") %>%
+  mutate(across('Project.Type', 
+                str_replace, 'Other', 'General')) %>%
+  filter(State == "Texas") %>%
+  janitor::clean_names()
+
+# merging census, sdwis, and ppl data into one mega data frame: 
+TX_ppl_tidy <- TX_PPL
+TX_cen_sdwis_ppl <- merge(census_sdwis, TX_ppl_tidy, 
+                          by = "pwsid",
+                          all = TRUE)
+```
+
+East TX 
+```{r}
+# TX counties in East Texas (done with some webpage scraping): 
+east_TX <- read.csv("./data/raw/east_TX_counties.csv") %>%
+  select(-X) %>%
+  janitor::clean_names()
+
+```
