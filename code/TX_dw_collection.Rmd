@@ -68,16 +68,40 @@ census <- tidycensus::get_acs(
 )
 ```
 
-Data merging, crosswalking, and listification 
+Data merging, saving, and organizing into a list:
 ```{r}
 ## Calculating census stats for pwsids: ########################################
+# NOTE: this is the areal interpolation method with weights = "total" 
 sab_census <- interp_sab_census(census_df = census, sab_df = sab, 
                                 total_pop_var = "estimate_total_pop", 
                                 white_alone_var = "estimate_white_alone")
 
-## Merging SDWIS, sabs, census ################################################# 
-# tidying census data for the year, decade, and duration of violation
-sdwis_tidy <- sdwis 
+# Reading & Writing to buckets #################################################
+# tmp <- tempfile()
+# write.csv(sdwis, file = tmp)
+# on.exit(unlink(tmp))
+# put_object(
+#   file = tmp,
+#   object = "/state-drinking-water/TX/raw/TX_sdwis.csv",
+#   bucket = "tech-team-data",
+# )
+
+# tmp <- tempfile()
+# st_write(sab_census, dsn = paste0(tmp, ".geojson"))
+# on.exit(unlink(tmp))
+# put_object(
+#   file = paste0(tmp, ".geojson"),
+#   object = "/state-drinking-water/TX/raw/TX_sab_census.geojson",
+#   bucket = "tech-team-data",
+# )
+
+# Reading SDWIS and SABs x Census from buckets: 
+sdwis_tidy <-aws.s3::s3read_using(read.csv, 
+                           object = "state-drinking-water/TX/raw/TX_sdwis.csv", 
+                           bucket = "tech-team-data")
+sab_census <-aws.s3::s3read_using(st_read, 
+                           object = "state-drinking-water/TX/raw/TX_sab_census.geojson", 
+                           bucket = "tech-team-data")
 
 ## Combining data into a list ################################################# 
 TX_data <- list()
@@ -85,8 +109,6 @@ TX_data[[1]] <- sab_census
 TX_data[[2]] <- sdwis_tidy
 # here's how you get the list entry out and into a data frame: 
 sab_census <- do.call(data.frame, TX_data[[1]])
-# data will be plopped here: 
-# https://tech-team-data.s3.amazonaws.com/state-drinking-water/TX/raw/
 ```
 
 Maps & Plots (QA/QC) for national data that has been queried to TX 
@@ -108,7 +130,7 @@ sab_sdwis_summary <- sab_census %>%
             census_total_pop = mean(estimate_total_pop),
             mean_POC_per = mean(estimate_poc_alone_per)) %>%
   left_join(., sdwis_viols)
-write.csv(sab_sdwis_summary, "./data/raw/sab_sdwis_summary.csv")
+st_write(sab_sdwis_summary, dsn = "./data/raw/sab_sdwis_summary.geojson")
 
 # quick stats to get an idea of what's happening at a glance: 
 # TODO: add number of sabs outside of TX boundary 
@@ -227,11 +249,9 @@ TX_PPL <- aws.s3::s3read_using(read.csv,
   filter(State == "Texas") %>%
   janitor::clean_names()
 
-# merging census, sdwis, and ppl data into one mega data frame: 
-TX_ppl_tidy <- TX_PPL
-TX_cen_sdwis_ppl <- merge(census_sdwis, TX_ppl_tidy, 
-                          by = "pwsid",
-                          all = TRUE)
+# Adding this to our list of TX data: 
+TX_data[[3]] <- TX_PPL
+
 ```
 
 East TX 
