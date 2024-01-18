@@ -241,6 +241,17 @@ Start of state-specific code:
 _______________________________________________________________________________
 Loading in TX data
 ```{r}
+# SOP for TX-specific data: ##################
+# PWSIDs should have "TX" at the beginning of them 
+# All data must have either pwsid, aquifer, and well number (or any match-able 
+# columns)
+# Group data collections by category (financial, environmental, etc. )
+# All data should be in wide format 
+# All data should have a pulled link to note where it came from
+# Add data to the TX_data list 
+# Variable naming convention - janitor::clean_names()
+
+
 # PPL data & tidying 
 TX_PPL <- aws.s3::s3read_using(read.csv, 
                                object = "s3://water-team-data/clean_data/srf_project_priority_lists/web_ppl_combined_clean_v1-1.csv") %>%
