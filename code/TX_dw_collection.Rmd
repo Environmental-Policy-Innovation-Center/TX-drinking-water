@@ -15,6 +15,8 @@ library(janitor)
 library(tidycensus)
 library(areal)
 library(mapview)
+library(httr)
+
 # remotes::install_github("environmental-policy-innovation-center/stateDW", 
 #                         auth_token = "insert-github-pat-here")
 library(stateDW)
@@ -107,8 +109,9 @@ sab_census <-aws.s3::s3read_using(st_read,
 TX_data <- list()
 TX_data[[1]] <- sab_census
 TX_data[[2]] <- sdwis_tidy
+names(TX_data) <- c("census", "sdwis")
 # here's how you get the list entry out and into a data frame: 
-sab_census <- do.call(data.frame, TX_data[[1]])
+sdwis <- do.call(data.frame, TX_data[[2]])
 ```
 
 Maps & Plots (QA/QC) for national data that has been queried to TX 
@@ -252,6 +255,68 @@ Loading in TX data
 # Variable naming convention - janitor::clean_names()
 
 
+## Environmental ##
+# Surface water intake locations: https://gis-tceq.opendata.arcgis.com/datasets/TCEQ::surface-intakes/api
+# Pulled Jan 22 2024 
+sw_intake <- GET("https://gisweb.tceq.texas.gov/arcgis/rest/services/Public/PWS/MapServer/1/query?where=1%3D1&outFields=*&outSR=4326&f=json")
+sw_intake_tidy <- fromJSON(rawToChar(sw_intake$content))$features$attribute %>%
+  as.data.frame() %>%
+  janitor::clean_names() %>%
+  rename(pwsid = pws_id) %>%
+  mutate(pwsid = paste0("TX", pwsid))
+
+TX_data[[3]] <- sw_intake_tidy
+names(TX_data)[3] <- "sw_intake"
+
+# Groundwater database: 
+# https://www.twdb.texas.gov/groundwater/data/GWDBDownload.zip
+# Pulled Jan 22 2024 & added to aws 
+# function for reading gwdb tables, which have unique separators: 
+read_gwdb_table <- function(x) {
+     read.table(x, header = TRUE, fill = TRUE, sep = "|")
+}
+# grabbing well metadata: 
+well_main <- aws.s3::s3read_using(read_gwdb_table, 
+                     object = "s3://tech-team-data/s3://tech-team-data/state-drinking-water/TX/raw/TX_GWDB/WellMain.txt") %>%
+  janitor::clean_names()
+TX_data[[4]] <- well_main
+names(TX_data)[4] <- "well_info"
+
+# water quality information: 
+wq_major <- aws.s3::s3read_using(read_gwdb_table, 
+                     object = "s3://tech-team-data/s3://tech-team-data/state-drinking-water/TX/raw/TX_GWDB/WaterQualityMajor.txt") %>%
+  janitor::clean_names()
+wq_minor <- aws.s3::s3read_using(read_gwdb_table, 
+                     object = "s3://tech-team-data/s3://tech-team-data/state-drinking-water/TX/raw/TX_GWDB/WaterQualityMinor.txt") %>%
+  janitor::clean_names()
+wq_other <- aws.s3::s3read_using(read_gwdb_table, 
+                     object = "s3://tech-team-data/s3://tech-team-data/state-drinking-water/TX/raw/TX_GWDB/WaterQualityOtherUnassigned.txt") %>%
+  janitor::clean_names()
+# let's just combine all of these 
+well_wq <- rbind(wq_major, wq_minor, wq_other)
+TX_data[[5]] <- well_wq
+names(TX_data)[5] <- "well_wq"
+
+# water level information: 
+wl_major <- aws.s3::s3read_using(read_gwdb_table, 
+                     object = "s3://tech-team-data/s3://tech-team-data/state-drinking-water/TX/raw/TX_GWDB/WaterLevelsMajor.txt") %>%
+  janitor::clean_names()
+wl_minor <- aws.s3::s3read_using(read_gwdb_table, 
+                     object = "s3://tech-team-data/s3://tech-team-data/state-drinking-water/TX/raw/TX_GWDB/WaterLevelsMinor.txt") %>%
+  janitor::clean_names()
+wl_other <- aws.s3::s3read_using(read_gwdb_table, 
+                     object = "s3://tech-team-data/s3://tech-team-data/state-drinking-water/TX/raw/TX_GWDB/WaterLevelsOtherUnassigned.txt") %>%
+  janitor::clean_names()
+# let's just combine all of these 
+well_wl <- rbind(wl_major, wl_minor, wl_other)
+TX_data[[6]] <- well_wl
+names(TX_data)[6] <- "well_wl"
+
+# Natural features & admin boundaries
+# all located here: https://www.twdb.texas.gov/mapping/gisdata.asp
+
+
+## Financial ##
 # PPL data & tidying 
 TX_PPL <- aws.s3::s3read_using(read.csv, 
                                object = "s3://water-team-data/clean_data/srf_project_priority_lists/web_ppl_combined_clean_v1-1.csv") %>%
