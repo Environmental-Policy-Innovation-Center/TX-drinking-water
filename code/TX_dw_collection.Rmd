@@ -16,7 +16,7 @@ library(tidycensus)
 library(areal)
 library(mapview)
 library(httr)
-
+library(readxl)
 # remotes::install_github("environmental-policy-innovation-center/stateDW", 
 #                         auth_token = "insert-github-pat-here")
 library(stateDW)
@@ -246,13 +246,39 @@ Loading in TX data
 ```{r}
 # SOP for TX-specific data: ##################
 # PWSIDs should have "TX" at the beginning of them 
-# All data must have either pwsid, aquifer, and well number (or any match-able 
+# All data must have either pwsid, aquifer, census id (block group/tract), and well number (or any match-able 
 # columns)
-# Group data collections by category (financial, environmental, etc. )
+# Group data collections by category (demographic, environmental, financial, etc. )
 # All data should be in wide format 
 # All data should have a pulled link to note where it came from
 # Add data to the TX_data list 
 # Variable naming convention - janitor::clean_names()
+
+## Demographic ## 
+## CEJST v1.0: 
+## Pulled Jan 31 2023:s3://tech-team-data/ej-data/cejest-v1/1.0-communities.csv
+## Note using file stored in tech-team-data/ej-data to preserve single conical data practice (SCDP)
+cejst_raw <- aws.s3::s3read_using(read.csv, object = "s3://tech-team-data/ej-data/cejest-v1/1.0-communities.csv")
+
+## Selecting variables we need (different then block level acs estimate data) ## 
+## census_tract_2010_id
+## total_threshold_criteria_exceeded
+## total_categories_exceeded 
+## identified_as_disadvantaged
+## percentage_of_tract_that_is_disadvantaged_by_area
+## total_population 
+cejst_cleaned <- cejst %>%
+                 janitor::clean_names()%>%
+                 select(c("census_tract_2010_id","total_threshold_criteria_exceeded",
+                          "total_categories_exceeded","identified_as_disadvantaged",
+                          "percentage_of_tract_that_is_disadvantaged_by_area","total_population"))%>%
+                          rename("total_population_cejst" = "total_population")
+
+TX_data[[12]] <- cejst_cleaned
+names(TX_data)[12] <- "cejst-v1"
+                 
+  
+
 
 
 ## Environmental ##
@@ -372,6 +398,19 @@ well_locations <- st_read(paste0(file_loc, "/TWDB_Groundwater.shp")) %>%
 TX_data[[11]] <- well_locations
 names(TX_data)[11] <- "well_locations"
 
+# surface water 303(d) river basin impairement 
+# source -> https://texaswaterexplorer.tnc.org/index.html
+
+file_loc <- "./data/raw/TX_basin_impairment_2012"
+download.file("https://texaswaterexplorer.tnc.org/downloads/Data_WQImpairment.zip", 
+              destfile = paste0(file_loc, ".zip"))
+unzip(zipfile = paste0(file_loc, ".zip"), exdir = file_loc) 
+file.remove(paste0(file_loc, ".zip"))
+basin_impairment <- read_excel(paste0(file_loc, "/Data_WQImpairment.xlsx"), sheet = "Basins")%>%
+  janitor::clean_names()
+
+TX_data[[13]] <- basin_impairment
+names(TX_data)[13] <- "basin_impairment"
 
 ## Financial ##
 # PPL data & tidying 
