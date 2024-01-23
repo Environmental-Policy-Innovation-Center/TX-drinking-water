@@ -268,6 +268,7 @@ sw_intake_tidy <- fromJSON(rawToChar(sw_intake$content))$features$attribute %>%
 TX_data[[3]] <- sw_intake_tidy
 names(TX_data)[3] <- "sw_intake"
 
+
 # Groundwater database: 
 # https://www.twdb.texas.gov/groundwater/data/GWDBDownload.zip
 # Pulled Jan 22 2024 & added to aws 
@@ -312,8 +313,64 @@ well_wl <- rbind(wl_major, wl_minor, wl_other)
 TX_data[[6]] <- well_wl
 names(TX_data)[6] <- "well_wl"
 
+
 # Natural features & admin boundaries
 # all located here: https://www.twdb.texas.gov/mapping/gisdata.asp
+# all downloaded 1/23/2024
+# major aquifers: 
+file_loc <- "./data/raw/TX_major_aquifers"
+download.file("https://www.twdb.texas.gov/mapping/gisdata/doc/major_aquifers.zip", 
+              destfile = paste0(file_loc, ".zip"))
+unzip(zipfile = paste0(file_loc, ".zip"), exdir = file_loc) 
+file.remove(paste0(file_loc, ".zip"))
+maj_aquifers <- st_read(paste0(file_loc, "/NEW_major_aquifers_dd.shp")) %>%
+  janitor::clean_names()
+TX_data[[7]] <- maj_aquifers
+names(TX_data)[7] <- "maj_aquifers"
+
+# minor aquifers: 
+file_loc <- "./data/raw/TX_minor_aquifers"
+download.file("https://www.twdb.texas.gov/mapping/gisdata/doc/minor_aquifers.zip", 
+              destfile = paste0(file_loc, ".zip"))
+unzip(zipfile = paste0(file_loc, ".zip"), exdir = file_loc) 
+file.remove(paste0(file_loc, ".zip"))
+minor_aquifers <- st_read(paste0(file_loc, "/Minor_Aquifers.shp")) %>%
+  janitor::clean_names()
+TX_data[[8]] <- minor_aquifers
+names(TX_data)[8] <- "minor_aquifers"
+
+# major river basins: 
+file_loc <- "./data/raw/TX_major_river_basins"
+download.file("https://www.twdb.texas.gov/mapping/gisdata/doc/Major_River_Basins_Shapefile.zip", 
+              destfile = paste0(file_loc, ".zip"))
+unzip(zipfile = paste0(file_loc, ".zip"), exdir = file_loc) 
+file.remove(paste0(file_loc, ".zip"))
+major_river_basins <- st_read(paste0(file_loc, "/TWDB_MRBs_2014.shp")) %>%
+  janitor::clean_names()
+TX_data[[9]] <- major_river_basins
+names(TX_data)[9] <- "major_river_basins"
+
+# existing reservoirs: 
+file_loc <- "./data/raw/TX_reservoirs"
+download.file("https://www.twdb.texas.gov/mapping/gisdata/doc/Existing_Reservoirs.zip", 
+              destfile = paste0(file_loc, ".zip"))
+unzip(zipfile = paste0(file_loc, ".zip"), exdir = file_loc) 
+file.remove(paste0(file_loc, ".zip"))
+reservoirs <- st_read(paste0(file_loc, "/TWDB_SWP2012_Major_Reservoirs.shp")) %>%
+  janitor::clean_names()
+TX_data[[10]] <- reservoirs
+names(TX_data)[10] <- "reservoirs"
+
+# well locations 
+file_loc <- "./data/raw/TX_well_locations"
+download.file("https://www.twdb.texas.gov/mapping/gisdata/doc/well/TWDB_Groundwater.zip", 
+              destfile = paste0(file_loc, ".zip"))
+unzip(zipfile = paste0(file_loc, ".zip"), exdir = file_loc) 
+file.remove(paste0(file_loc, ".zip"))
+well_locations <- st_read(paste0(file_loc, "/TWDB_Groundwater.shp")) %>%
+  janitor::clean_names()
+TX_data[[11]] <- well_locations
+names(TX_data)[11] <- "well_locations"
 
 
 ## Financial ##
@@ -326,7 +383,7 @@ TX_PPL <- aws.s3::s3read_using(read.csv,
   janitor::clean_names()
 
 # Adding this to our list of TX data: 
-TX_data[[3]] <- TX_PPL
+# TX_data[[3]] <- TX_PPL
 
 ```
 
