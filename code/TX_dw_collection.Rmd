@@ -283,6 +283,9 @@ names(TX_data)[12] <- "cejst-v1"
   
 Environmental: 
 ```{r}
+                 
+
+## Environmental ##
 # Surface water intake locations: https://gis-tceq.opendata.arcgis.com/datasets/TCEQ::surface-intakes/api
 # Pulled Jan 22 2024 
 sw_intake <- GET("https://gisweb.tceq.texas.gov/arcgis/rest/services/Public/PWS/MapServer/1/query?where=1%3D1&outFields=*&outSR=4326&f=json")
@@ -399,7 +402,7 @@ well_locations <- st_read(paste0(file_loc, "/TWDB_Groundwater.shp")) %>%
 TX_data[[11]] <- well_locations
 names(TX_data)[11] <- "well_locations"
 
-# surface water 303(d) river basin impairement 
+# surface water 303(d) river basin impairment 
 # source -> https://texaswaterexplorer.tnc.org/index.html
 file_loc <- "./data/raw/TX_basin_impairment_2012"
 download.file("https://texaswaterexplorer.tnc.org/downloads/Data_WQImpairment.zip", 
@@ -475,6 +478,34 @@ TX_PPL <- aws.s3::s3read_using(read.csv,
 
 # Adding this to our list of TX data: 
 # TX_data[[3]] <- TX_PPL
+
+## Water Loss Audits ## 
+waterloss_raw <- aws.s3::s3read_using(read_csv, 
+                               object = "s3://tech-team-data/state-drinking-water/TX/raw/TCEQ_Loss_Audits/SummaryAuditsByCategory_2010.csv")
+# Name of Utility			"Real Loss GMD 
+# (<32 conn/mi)"	Real Loss GCD	"Apparent Loss 
+# GCD"	Water Loss GCD	ILI (>= 3,000 connections)	Total GPCD	GPCD Loss		"Real Loss Cost 
+# in dollars"		"Apparent Loss Cost 
+# in dollars"		
+ colnames <- c("Name of Utility",
+               "Real Loss GMD (<32 conn/mi)",
+               "Real Loss GCD",
+               "Apparent Loss GCD",
+                "Water Loss GCD",
+               "ILI (>= 3,000 connections)", 
+                "Total GPCD", 
+               "GPCD Loss",
+               "Real Loss Cost in dollars",
+               "Apparent Loss Cost in dollars")
+waterloss <- waterloss_raw %>%
+             select(1:10)
+
+colnames(waterloss) <- colnames
+
+waterloss <- waterloss %>%
+             janitor::clean_names()%>%
+             filter(name_of_utility != "UtilityName")
+
 ```
 
 East TX 
