@@ -478,16 +478,14 @@ TX_PPL <- aws.s3::s3read_using(read.csv,
 
 # Adding this to our list of TX data: 
 # TX_data[[3]] <- TX_PPL
+```
 
-## Water Loss Audits ## 
-waterloss_raw <- aws.s3::s3read_using(read_csv, 
-                               object = "s3://tech-team-data/state-drinking-water/TX/raw/TCEQ_Loss_Audits/SummaryAuditsByCategory_2010.csv")
-# Name of Utility			"Real Loss GMD 
-# (<32 conn/mi)"	Real Loss GCD	"Apparent Loss 
-# GCD"	Water Loss GCD	ILI (>= 3,000 connections)	Total GPCD	GPCD Loss		"Real Loss Cost 
-# in dollars"		"Apparent Loss Cost 
-# in dollars"		
- colnames <- c("Name of Utility",
+Water Loss Audits
+```{r}
+## This requires merging in downloaded file, looping over to cleaning and then merge.
+
+# vector of cleaned column names 
+waterlosscolnames <- c("Name of Utility",
                "Real Loss GMD (<32 conn/mi)",
                "Real Loss GCD",
                "Apparent Loss GCD",
@@ -496,15 +494,40 @@ waterloss_raw <- aws.s3::s3read_using(read_csv,
                 "Total GPCD", 
                "GPCD Loss",
                "Real Loss Cost in dollars",
-               "Apparent Loss Cost in dollars")
+               "Apparent Loss Cost in dollars","Year")
+
+#making empty dataframe 
+waterloss_all <- setNames(data.frame(matrix(ncol = length(waterlosscolnames), nrow = 0)), waterlosscolnames)
+
+year <- 2010 
+
+# ! edit this when adding additional years 
+stopyear <- 2022 
+
+while(year <= stopyear)
+{
+print(year)
+waterloss_raw <- aws.s3::s3read_using(read_csv, 
+                               object = paste0("s3://tech-team-data/state-drinking-water/TX/raw/TCEQ_Loss_Audits/SummaryAuditsByCategory_",year,".csv"))
+
 waterloss <- waterloss_raw %>%
              select(1:10)
 
-colnames(waterloss) <- colnames
+colnames(waterloss) <- waterlosscolnames
 
 waterloss <- waterloss %>%
              janitor::clean_names()%>%
-             filter(name_of_utility != "UtilityName")
+             filter(name_of_utility != "UtilityName")%>%
+             mutate(Year = year)
+
+waterloss_all <- rbind(waterloss_all,waterloss)
+year <- year + 1
+}
+
+
+TX_data[[13]] <- waterloss_all
+names(TX_data)[13] <- "waterloss_2010_2022"
+
 
 ```
 
