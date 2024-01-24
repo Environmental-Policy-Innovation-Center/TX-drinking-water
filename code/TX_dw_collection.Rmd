@@ -17,12 +17,13 @@ library(areal)
 library(mapview)
 library(httr)
 library(readxl)
+library(jsonlite)
 # remotes::install_github("environmental-policy-innovation-center/stateDW", 
 #                         auth_token = "insert-github-pat-here")
 library(stateDW)
 ```
 
-Sourcing downloaders: 
+Sourcing Downloaders: 
 ```{r}
 # Migrated to R package workflow but keeping these here as a backup 
 # source("./code/functions/get_sab.R")
@@ -30,7 +31,7 @@ Sourcing downloaders:
 # source("./code/functions/interp_sab_census.R")
 ```
 
-Grabbing data from APIs: 
+Grabbing Data Nationall Available from APIs: 
 ```{r}
 # grabbing sabs: 
 sab <- get_sab(states = c("TX"), crs = ("ESRI:102296"))
@@ -70,7 +71,7 @@ census <- tidycensus::get_acs(
 )
 ```
 
-Data merging, saving, and organizing into a list:
+Merging & Organizing Datasets Available Nationally: 
 ```{r}
 ## Calculating census stats for pwsids: ########################################
 # NOTE: this is the areal interpolation method with weights = "total" 
@@ -97,12 +98,12 @@ sab_census <- interp_sab_census(census_df = census, sab_df = sab,
 #   bucket = "tech-team-data",
 # )
 
-# Reading SDWIS and SABs x Census from buckets: 
-sdwis_tidy <-aws.s3::s3read_using(read.csv, 
+# Reading SDWIS, SABs x Census, and CEJST from buckets: 
+sdwis_tidy <- aws.s3::s3read_using(read.csv, 
                            object = "state-drinking-water/TX/raw/TX_sdwis.csv", 
                            bucket = "tech-team-data")
-sab_census <-aws.s3::s3read_using(st_read, 
-                           object = "state-drinking-water/TX/raw/TX_sab_census.geojson", 
+sab_census <- aws.s3::s3read_using(st_read, 
+                           object = "state-drinking-water/TX/raw/TX_sab_census.geojson",
                            bucket = "tech-team-data")
 
 ## Combining data into a list ################################################# 
@@ -240,9 +241,9 @@ ggsave("./results/qa_qc/pop_violation_plot.png", pop_violations)
 ```
 
 _______________________________________________________________________________
-Start of state-specific code: 
+Start of TX-specific code: 
 _______________________________________________________________________________
-Loading in TX data
+Merging & Organizing Datasets Available Only in TX
 ```{r}
 # SOP for TX-specific data: ##################
 # PWSIDs should have "TX" at the beginning of them 
@@ -253,8 +254,10 @@ Loading in TX data
 # All data should have a pulled link to note where it came from
 # Add data to the TX_data list 
 # Variable naming convention - janitor::clean_names()
+```
 
-## Demographic ## 
+Demographic: 
+```{r}
 ## CEJST v1.0: 
 ## Pulled Jan 31 2023:s3://tech-team-data/ej-data/cejest-v1/1.0-communities.csv
 ## Note using file stored in tech-team-data/ej-data to preserve single conical data practice (SCDP)
@@ -276,12 +279,10 @@ cejst_cleaned <- cejst %>%
 
 TX_data[[12]] <- cejst_cleaned
 names(TX_data)[12] <- "cejst-v1"
-                 
+```                 
   
-
-
-
-## Environmental ##
+Environmental: 
+```{r}
 # Surface water intake locations: https://gis-tceq.opendata.arcgis.com/datasets/TCEQ::surface-intakes/api
 # Pulled Jan 22 2024 
 sw_intake <- GET("https://gisweb.tceq.texas.gov/arcgis/rest/services/Public/PWS/MapServer/1/query?where=1%3D1&outFields=*&outSR=4326&f=json")
@@ -400,7 +401,6 @@ names(TX_data)[11] <- "well_locations"
 
 # surface water 303(d) river basin impairement 
 # source -> https://texaswaterexplorer.tnc.org/index.html
-
 file_loc <- "./data/raw/TX_basin_impairment_2012"
 download.file("https://texaswaterexplorer.tnc.org/downloads/Data_WQImpairment.zip", 
               destfile = paste0(file_loc, ".zip"))
@@ -412,7 +412,59 @@ basin_impairment <- read_excel(paste0(file_loc, "/Data_WQImpairment.xlsx"), shee
 TX_data[[13]] <- basin_impairment
 names(TX_data)[13] <- "basin_impairment"
 
-## Financial ##
+
+# reservoir levels: WIP by EmmaLi - have recent conditions but would also like 
+# to grab historic levels. 
+# pulled Jan 24 2024 from: https://www.waterdatafortexas.org/reservoirs/statewide
+# only recent conditions: 
+res_levels <- read.csv("http://www.waterdatafortexas.org/reservoirs/recent-conditions.csv")
+
+# groundwater levels: WIP by EmmaLi - have recent conditions but would also like 
+# to grab historic levels. 
+# pulled Jan 24 2024 from: https://www.waterdatafortexas.org/groundwater
+# only recent conditions: 
+well_levels <- read.csv("https://www.waterdatafortexas.org/groundwater/recent-conditions.csv")
+# trying to grab data historic data for wells - difficult because they have
+# different loggers and therefore different column names 
+# well_nums <- unique(well_levels$state_well_number)
+# well_data <- data.frame()
+# for(i in 1:length(well_nums)){
+#   well_i <- well_nums[i]
+#   # fixing well number if it is missing a preceding 0:
+#   well_i <- paste0(paste(rep(0, (7-nchar(well_i))), collapse = ""), well_i, collapse = "")
+#   print(well_i)
+#   download_link <- paste0("https://www.waterdatafortexas.org/groundwater/well/", well_i, ".csv")
+#   well_data_i <- read.csv(download_link) %>%
+#     # removing the temperature logger from panhandle GCD
+#     select(-"temperature.C.")
+#   well_data <- rbind(well_data, well_data_i)
+# }
+```
+
+Water Delivery System
+```{r}
+# Without an api or data download link, I manually downloaded data from 
+# 2016 - 2020 from here: https://www3.twdb.texas.gov/apps/reports/WU_REP/PWS_Categorical_Connections_and_Volumes
+# and dropped it in my local ./data/raw folder: 
+folder <- "./data/raw/TX_historic_use_estimates/"
+files <- list.files(folder)
+year_use_estimates <- lapply(paste0(folder, files), read.csv, header = TRUE)
+historic_use <- do.call(rbind, year_use_estimates) %>%
+  janitor::clean_names()
+# writing to aws: 
+# tmp <- tempfile()
+# write.csv(historic_use, file = paste0(tmp, ".csv"))
+# on.exit(unlink(tmp))
+# put_object(
+#   file = paste0(tmp, ".csv"),
+#   object = "/state-drinking-water/TX/raw/TX_historic_use_estimates.csv",
+#   bucket = "tech-team-data",
+# )
+
+```
+
+Financial
+```{r}
 # PPL data & tidying 
 TX_PPL <- aws.s3::s3read_using(read.csv, 
                                object = "s3://water-team-data/clean_data/srf_project_priority_lists/web_ppl_combined_clean_v1-1.csv") %>%
@@ -423,7 +475,6 @@ TX_PPL <- aws.s3::s3read_using(read.csv,
 
 # Adding this to our list of TX data: 
 # TX_data[[3]] <- TX_PPL
-
 ```
 
 East TX 
@@ -432,5 +483,9 @@ East TX
 east_TX <- read.csv("./data/raw/east_TX_counties.csv") %>%
   select(-X) %>%
   janitor::clean_names()
+```
+
+Loading all data for TX & organizing into a list 
+```{r}
 
 ```
