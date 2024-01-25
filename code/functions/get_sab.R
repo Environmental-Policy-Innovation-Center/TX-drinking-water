@@ -27,7 +27,8 @@ get_sab <- function(states = ("TX"), crs = ("ESRI:102296")){
   sab <- sf::st_read("https://www.hydroshare.org/resource/9ebc0a0b43b843b9835830ffffdd971e/data/contents/temm.gpkg")
   # minor cleaning and subsetting based on state pwsids
   sab_states <- sab %>%
-    filter(state_code %in% states) %>%
+    # filtering for both primacy agency code and state code
+    filter(primacy_agency_code %in% states | state_code %in% states) %>%
     mutate(area_miles = as.numeric(sf::st_area(.))) %>%
     mutate(area_miles = area_miles/27880000) %>%
     mutate(pop_density = population_served_count / area_miles) %>%

@@ -18,6 +18,7 @@ library(mapview)
 library(httr)
 library(readxl)
 library(jsonlite)
+library(googlesheets4)
 # remotes::install_github("environmental-policy-innovation-center/stateDW", 
 #                         auth_token = "insert-github-pat-here")
 library(stateDW)
@@ -520,6 +521,9 @@ water_aff <- readxl::read_excel(temp_file) %>%
 # )
 
 ## Danielle's SRF analysis: 
+gs4_deauth()
+URL <- "https://docs.google.com/spreadsheets/d/1kUHLdzFjwmKx4r6YTu2qjxwNuuG5JeUi/edit#gid=1618705547"
+non_applying_cities <- read_sheet(URL, sheet = "Analysis")
 
 ```
 
@@ -633,6 +637,32 @@ reservoir_levels_10yr <- aws.s3::s3read_using(read.csv,
 recent_well_levels <- aws.s3::s3read_using(read.csv, 
                                            object = "s3://tech-team-data/state-drinking-water/TX/raw/TX_recent_well_levels.csv")
 
+# TCEQ DWW system data: 
+# NOTE: there is A TON more information in s3 for us to pull like enforcement 
+# actions, etc. but starting the structure here for grabbing that information
+# pulling data from two different webscraping events and locating pwsids that 
+# are community water systems: 
+water_details_dec17 <- aws.s3::s3read_using(read.csv, 
+                                      object = "s3://tech-team-data/state-drinking-water/TX/raw/TX_TCEQ_DWW/TX_20231217/WaterSystemDetail/TX_Water System Details_20231217_20231229203427.csv") 
+water_details_dec3rd <- aws.s3::s3read_using(read.csv, 
+                                      object = "s3://tech-team-data/state-drinking-water/TX/raw/TX_TCEQ_DWW/TX_20231203/WaterSystemDetail/TX_Water System Details_20231203.csv") 
+combined_details <- rbind(water_details_dec17, water_details_dec3rd)
+water_details <- pivot_wider(combined_details, names_from = "Type", values_from = "Value") %>%
+  janitor::clean_names()
+# grabbing just community water systems (tceq has 10k that are not cws): 
+tceq_cws <- water_details %>%
+  filter(system_type == "C") # 4666
+
+# pulling violations: 
+viol_dec17 <- aws.s3::s3read_using(read.csv, 
+                                      object = "s3://tech-team-data/state-drinking-water/TX/raw/TX_TCEQ_DWW/TX_20231217/Violations/TX_Individual Violations_20231217_20231229203427.csv") 
+viol_dec3rd <- aws.s3::s3read_using(read.csv, 
+                                      object = "s3://tech-team-data/state-drinking-water/TX/raw/TX_TCEQ_DWW/TX_20231203/Violations/TX_Individual Violations_20231203.csv") 
+comined_viols <- rbind(viol_dec17, viol_dec3rd) %>%
+  janitor::clean_names() %>%
+  filter(water_system_no %in% tceq_cws$water_system_no) # 118,659
+# SDWIS contains 20,000 more violations  
+
 ## Water Delivery System 
 # historic use estimates: 
 historic_use_estimates <-  aws.s3::s3read_using(read.csv, 
@@ -653,8 +683,6 @@ TX_PPL <- aws.s3::s3read_using(read.csv,
 # water affordability: 
 water_aff <- aws.s3::s3read_using(read.csv, 
                                object = "s3://tech-team-data/state-drinking-water/TX/raw/TX_water_affordability.csv") 
-
-
 
 ## Combining into a list: ######################################################
 # TX_data <- list()
