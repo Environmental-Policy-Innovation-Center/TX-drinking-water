@@ -430,8 +430,20 @@ well_levels <- read.csv("https://www.waterdatafortexas.org/groundwater/recent-co
 # different loggers and therefore different column names (i.e., some have temp 
 # and others don't) - decided to pull historic well data as needed. 
 
-## TCEQ-Drinking Water Watch database: 
-
+# Climate Vulnerability Index: https://map.climatevulnerabilityindex.org/map/cvi_overall/usa?mapBoundaries=Tract&mapFilter=0&reportBoundaries=Tract&geoContext=State
+# manually downloaded from dropbox on Jan 26 2024 (there is no api) and 
+# added to my ./data/raw folder: 
+cvi <- readxl::read_excel("./data/raw/MasterCVIDataset_Oct2023.xlsx", 
+           sheet = "Domain CVI Values") %>%
+  filter(State == "TX") %>%
+  janitor::clean_names()
+# write.csv(cvi, "./data/raw/TX_CVI.csv")
+# just a note that this other sheet exists which contains ~180 other stats 
+# (some are health-related) for each census tract: 
+# indicator_native_units <- readxl::read_excel("./data/raw/MasterCVIDataset_Oct2023.xlsx", 
+#            sheet = "Indicator Native Units") %>%
+#   filter(State == "TX") %>%
+#   janitor::clean_names()
 ```
 
 Water Delivery System
@@ -524,7 +536,6 @@ water_aff <- readxl::read_excel(temp_file) %>%
 gs4_deauth()
 URL <- "https://docs.google.com/spreadsheets/d/1kUHLdzFjwmKx4r6YTu2qjxwNuuG5JeUi/edit#gid=1618705547"
 non_applying_cities <- read_sheet(URL, sheet = "Analysis")
-
 ```
 
 East TX 
@@ -568,11 +579,19 @@ cejst_cleaned <- cejst_raw %>%
            "percentage_of_tract_that_is_disadvantaged_by_area","total_population"))%>%
   rename("total_population_cejst" = "total_population")
 
+# Social Vulnerability Index 
+svi <- aws.s3::s3read_using(read.csv, 
+                            object = "s3://tech-team-data/ej-data/cejest-v1/1.0-communities.csv")
+
+# Climate Vulnerability Index: 
+cvi <- aws.s3::s3read_using(read.csv, 
+                            object = "s3://tech-team-data/state-drinking-water/TX/raw/TX_CVI.csv")
+
 ## TX-specific datasets: #######################################################
 ## Environmental: 
 # surface water intake locations: 
 sw_intake <- aws.s3::s3read_using(read.csv, 
-                               object = "s3://tech-team-data/state-drinking-water/TX/raw/TX_sw_intake.csv") 
+                               object = "s3://tech-team-data/state-drinking-water/TX/raw/TX_SVI_2020.csv") 
 
 # groundwater quality & levels: 
 # function for reading gwdb tables, which have unique separators: 
