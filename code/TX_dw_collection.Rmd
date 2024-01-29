@@ -565,7 +565,7 @@ cejst_cleaned <- cejst_raw %>%
 
 # Social Vulnerability Index 
 svi <- aws.s3::s3read_using(read.csv, 
-                            object = "s3://tech-team-data/ej-data/cejest-v1/1.0-communities.csv")
+                            object = "s3://tech-team-data/state-drinking-water/TX/raw/TX_SVI_2020.csv")
 
 # Climate Vulnerability Index: 
 cvi <- aws.s3::s3read_using(read.csv, 
@@ -575,7 +575,7 @@ cvi <- aws.s3::s3read_using(read.csv,
 ## Environmental: 
 # surface water intake locations: 
 sw_intake <- aws.s3::s3read_using(read.csv, 
-                               object = "s3://tech-team-data/state-drinking-water/TX/raw/TX_SVI_2020.csv") 
+                               object = "s3://tech-team-data/state-drinking-water/TX/raw/TX_sw_intake.csv") 
 
 # groundwater quality & levels: 
 # function for reading gwdb tables, which have unique separators: 
@@ -723,7 +723,6 @@ TX_swp_needs <- aws.s3::s3read_using(read.csv,
                                    object =  "s3://tech-team-data/state-drinking-water/TX/raw/TX_2022_SWP/needs.csv")
 TX_swp_strategies <- aws.s3::s3read_using(read.csv,
                                    object =  "s3://tech-team-data/state-drinking-water/TX/raw/TX_2022_SWP/strategies.csv")
-
 
 ## Financial 
 # PPL data & tidying 
