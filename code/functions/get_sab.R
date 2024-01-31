@@ -29,10 +29,10 @@ get_sab <- function(states = ("TX"), crs = ("ESRI:102296")){
   sab_states <- sab %>%
     # filtering for both primacy agency code and state code
     filter(primacy_agency_code %in% states | state_code %in% states) %>%
+    sf::st_transform(., crs = crs) %>%
     mutate(area_miles = as.numeric(sf::st_area(.))) %>%
     mutate(area_miles = area_miles/27880000) %>%
     mutate(pop_density = population_served_count / area_miles) %>%
-    sf::st_transform(crs = crs) %>%
     mutate(population_served_count = as.numeric(population_served_count))
   return(sab_states)
 }

@@ -1,12 +1,12 @@
 ---
-title: "TX Water Data Cleaning & Processing"
+title: "Texas Drinking Water Data Collection"
+author: "EmmaLi Tsai"
+date: "2024-01-29"
 output: html_document
-date: "2023-12-07"
-author: "EmmaLi Tsai" 
 ---
 
 Packages: 
-```{r}
+```{r packages}
 library(tidyverse)
 library(leaflet)
 library(sf)
@@ -26,25 +26,34 @@ library(stateDW)
 # Store keys on local machine in .Renviron file! 
 ```
 
-Sourcing Downloaders: 
-```{r}
+Functions: 
+```{r functions}
 # Migrated to R package workflow but keeping these here as a backup 
 # source("./code/functions/get_sab.R")
 # source("./code/functions/get_SDWIS.R")
 # source("./code/functions/interp_sab_census.R")
 ```
 
-Grabbing Data Nationally Available from APIs: 
-```{r}
+_______________________________________________________________________________
+### Data Download - code for web scraping & saving raw files. Data here either take a long time to download, require extra tidying, are updated frequently (i.e., reservoir or aquifer levels) or need to be manually downloaded from a website. Everything in this section is added to S3.
+_______________________________________________________________________________
+## Data Download: Demographic
+```{r data collection}
+# SOP for TX-specific data: ####################################################
+# PWSIDs should have "TX" at the beginning of them 
+# All data must have either pwsid, aquifer, census id (block group/tract), and well number (or any match-able 
+# columns)
+# Group data collections by category (demographic, environmental, financial, etc. )
+# All data should be in wide format 
+# All data should have a pulled link to note where it came from
+# Add data to the TX_data list 
+# Variable naming convention - janitor::clean_names()
+
+## Demographic #################################################################
 # grabbing sabs: 
 sab <- get_sab(states = c("TX"), crs = ("ESRI:102296"))
 # making note the of the pwsids located in TX: 
 pwsids <- unique(sab$pwsid)
-
-# grabbing SDWIS data - currently looking at all of them by leaving cont_code
-# as blank
-sdwis <- get_SDWIS(pwsids = pwsids, 
-                   cont_code = c())
 
 # census data - grabbing block group stats for now 
 # vars_acs <- load_variables(year = 2021, "acs5")
@@ -72,199 +81,24 @@ census <- tidycensus::get_acs(
   year = 2021,
   geometry = TRUE
 )
-```
 
-Merging & Organizing Datasets Available Nationally: 
-```{r}
-## Calculating census stats for pwsids: ########################################
-# NOTE: this is the areal interpolation method with weights = "total" 
+# crosswalking census stats with pwsids: 
 sab_census <- interp_sab_census(census_df = census, sab_df = sab, 
                                 total_pop_var = "estimate_total_pop", 
                                 white_alone_var = "estimate_white_alone")
-
-# Reading & Writing to buckets 
-# SDWIS:
-# tmp <- tempfile()
-# write.csv(sdwis, file = tmp)
-# on.exit(unlink(tmp))
-# put_object(
-#   file = tmp,
-#   object = "/state-drinking-water/TX/raw/TX_sdwis.csv",
-#   bucket = "tech-team-data",
-# )
-
 # SAB & Census:
-# tmp <- tempfile()
-# st_write(sab_census, dsn = paste0(tmp, ".geojson"))
-# on.exit(unlink(tmp))
-# put_object(
-#   file = paste0(tmp, ".geojson"),
-#   object = "/state-drinking-water/TX/raw/TX_sab_census.geojson",
-#   bucket = "tech-team-data",
-# )
+tmp <- tempfile()
+st_write(sab_census, dsn = paste0(tmp, ".geojson"))
+on.exit(unlink(tmp))
+put_object(
+  file = paste0(tmp, ".geojson"),
+  object = "/state-drinking-water/TX/raw/TX_sab_census.geojson",
+  bucket = "tech-team-data",
+)
 ```
-
-Maps & Plots (QA/QC) for national data that has been queried to TX 
+## Data Download: Environmental
 ```{r}
-## QA/QC #####################################################################
-# grabbing summary stats for the census and sdwis violations:  
-sdwis_viols <- sdwis_tidy %>%
-  group_by(pwsid) %>%
-  summarize(total_viol = length(unique(violation_id)))
-
-# grabbing summary stats for the census and sdwis violations:  
-sab_sdwis_summary <- sab_census %>%
-  group_by(pwsid, primary_source_code) %>%
-  mutate(population_served_count = as.numeric(population_served_count)) %>%
-  summarize(service_connections = mean(service_connections_count),
-            sdwis_total_pop = mean(population_served_count), 
-            area = mean(area_miles), 
-            pop_density = mean(pop_density), 
-            census_total_pop = mean(estimate_total_pop),
-            mean_POC_per = mean(estimate_poc_alone_per)) %>%
-  left_join(., sdwis_viols)
-st_write(sab_sdwis_summary, dsn = "./data/raw/sab_sdwis_summary.geojson")
-
-# quick stats to get an idea of what's happening at a glance: 
-# TODO: add number of sabs outside of TX boundary 
-diag_log <- data.frame(diagnostic = "") %>%
-  mutate(na_pwsid = sum(is.na(sab_sdwis_summary$pwsid)), 
-         na_serv_connections = sum(is.na(sab_sdwis_summary$service_connections)),
-         na_sdwis_pop = sum(is.na(sab_sdwis_summary$sdwis_total_pop)), 
-         zero_sdwis_pop = sum(sab_sdwis_summary$sdwis_total_pop == 0, 
-                              na.rm = TRUE), 
-         zero_area = sum(sab_sdwis_summary$area == 0,
-                         na.rm = TRUE), 
-         zero_pop_density = sum(sab_sdwis_summary$pop_density %in% 
-                                  c(0, "NaN", "Inf"),
-                                na.rm = TRUE), 
-         na_cesus_pop = sum(is.na(sab_sdwis_summary$census_total_pop)), 
-         zero_census_pop = sum(round(sab_sdwis_summary$census_total_pop, 0) %in% 
-                                 c(0, "NaN", "Inf"), 
-                               na.rm = TRUE), 
-         empty_geoms = sum(sf::st_is_empty(sab_sdwis_summary))) %>%
-  select(-diagnostic) %>%
-  pivot_longer(., cols = everything())
-# moving this to results
-write.csv(diag_log, "./results/qa_qc/diagnostic_log.csv")
-
-## Map of pwsids and % poc ####################################################
-# converting to sf, transformations, and filtering 
-sab_census_sf <- sab_census %>%
-  st_as_sf(.) %>%
-  st_transform(., '+proj=longlat +datum=WGS84') %>% 
-  filter(!st_is_empty(.))
-
-poc_pal <- colorNumeric(
-  palette = viridis::turbo(6),
-  domain = sab_census_sf$estimate_poc_alone_per)
-poc_map <- leaflet() %>%
-  addProviderTiles(providers$CartoDB.VoyagerNoLabels, group = "Toner Lite")  %>%
-  addPolygons(data = sab_census_sf, 
-              opacity = 9,
-              color = ~poc_pal(estimate_poc_alone_per),
-              weight = 1, 
-              highlightOptions = highlightOptions(color = "grey", weight = 2,
-                                                  bringToFront = TRUE), 
-              label = paste0("pwsid: ", sab_census_sf$pwsid, 
-                             " / poc %: ", 
-                             round(sab_census_sf$estimate_poc_alone_per, 0))) %>%
-    addLegend("bottomright", 
-            pal = poc_pal, 
-            values = sab_census_sf$estimate_poc_alone_per,
-            title = "% POC",
-            opacity = 1)
-mapview::mapshot2(poc_map, file = "./results/qa_qc/pwsid_poc_map.png")
-
-## Map of pwsids and # SDWIS violations ########################################
-# finding the total number of violations (need to also standardize for year and
-# how long the system has been operating for):
-# violations <- sdwis_tidy %>%
-#   group_by(pwsid) %>%
-#   summarize(total_viol = length(unique(violation_id)))
-# grabbing geoms for mapping: 
-violations_geoms <- merge(sab[,c("pwsid")], sdwis_viols, all = T) %>%
-  st_as_sf(.) %>%
-  st_transform(., '+proj=longlat +datum=WGS84') %>% 
-  filter(!st_is_empty(.))
-  
-# map of total number of violations for pwsid: 
-viol_pal <- colorNumeric(
-  palette = viridis::plasma(6),
-  domain = violations_geoms$total_viol)
-viol_map <- leaflet() %>%
-  addProviderTiles(providers$CartoDB.VoyagerNoLabels, group = "Toner Lite")  %>%
-  addPolygons(data = violations_geoms, 
-              opacity = 9,
-              color = ~viol_pal(total_viol),
-              weight = 1, 
-              highlightOptions = highlightOptions(color = "grey", weight = 2,
-                                                  bringToFront = TRUE), 
-              label = paste0("pwsid: ", violations_geoms$pwsid, 
-                             " / violations: ", violations_geoms$total_viol)) %>%
-    addLegend("bottomright", 
-            pal = viol_pal, 
-            values = violations_geoms$total_viol,
-            title = "# violations",
-            opacity = 1)
-mapview::mapshot2(viol_map, file = "./results/qa_qc/pwsid_violation_map.png")
-
-# SDWIS violations by % POC: 
-poc_violations <- ggplot(sab_sdwis_summary, 
-       aes(x = mean_POC_per, y = total_viol, color = primary_source_code)) +
-  geom_point() +
-  theme_bw() +
-  theme(legend.position = "none") + 
-  facet_wrap(~primary_source_code, ncol = 1, scales = "free") + 
-  labs(x = "Percent Person of Color", y = "Number of Violations")
-ggsave("./results/qa_qc/poc_violation_plot.png", poc_violations)
-
-pop_violations <- ggplot(sab_sdwis_summary, 
-                         aes(x = sdwis_total_pop, y = total_viol, 
-                             color = total_viol)) +
-  geom_point() +
-  theme_bw() +
-  theme(legend.position = "none") +
-  labs(x = "Total Population", y = "Number of Violations")
-ggsave("./results/qa_qc/pop_violation_plot.png", pop_violations)
-```
-
-_______________________________________________________________________________
-Start of TX-specific data collection code: 
-_______________________________________________________________________________
-Merging & Organizing Datasets Available Only in TX
-```{r}
-# SOP for TX-specific data: ##################
-# PWSIDs should have "TX" at the beginning of them 
-# All data must have either pwsid, aquifer, census id (block group/tract), and well number (or any match-able 
-# columns)
-# Group data collections by category (demographic, environmental, financial, etc. )
-# All data should be in wide format 
-# All data should have a pulled link to note where it came from
-# Add data to the TX_data list 
-# Variable naming convention - janitor::clean_names()
-```
-
-Environmental: 
-```{r}
-## Surface water intake locations: https://gis-tceq.opendata.arcgis.com/datasets/TCEQ::surface-intakes/api
-# Pulled Jan 22 2024 
-sw_intake <- GET("https://gisweb.tceq.texas.gov/arcgis/rest/services/Public/PWS/MapServer/1/query?where=1%3D1&outFields=*&outSR=4326&f=json")
-sw_intake_tidy <- fromJSON(rawToChar(sw_intake$content))$features$attribute %>%
-  as.data.frame() %>%
-  janitor::clean_names() %>%
-  rename(pwsid = pws_id) %>%
-  mutate(pwsid = paste0("TX", pwsid))
-# writing to aws: 
-# tmp <- tempfile()
-# write.csv(sw_intake_tidy, file = paste0(tmp, ".csv"))
-# on.exit(unlink(tmp))
-# put_object(
-#   file = paste0(tmp, ".csv"),
-#   object = "/state-drinking-water/TX/raw/TX_sw_intake.csv",
-#   bucket = "tech-team-data",
-# )
-
+## Environmental ###############################################################
 ## Groundwater database: https://www.twdb.texas.gov/groundwater/data/GWDBDownload.zip
 # Pulled Jan 22 2024 
 file_loc <- "./data/raw/TX_GWDB"
@@ -278,110 +112,19 @@ file.remove(paste0(file_loc, ".zip"))
 #   bucket = "s3://tech-team-data/state-drinking-water/TX/raw/TX_GWDB_test"
 # )
 
-## Major aquifers: https://www.twdb.texas.gov/mapping/gisdata/doc/major_aquifers.zip
-# downloaded 1/23/2024
-file_loc <- "./data/raw/TX_major_aquifers"
-download.file("https://www.twdb.texas.gov/mapping/gisdata/doc/major_aquifers.zip", 
-              destfile = paste0(file_loc, ".zip"))
-unzip(zipfile = paste0(file_loc, ".zip"), exdir = file_loc) 
-file.remove(paste0(file_loc, ".zip"))
-maj_aquifers <- st_read(paste0(file_loc, "/NEW_major_aquifers_dd.shp")) %>%
-  janitor::clean_names()
-# writing to aws: 
-# tmp <- tempfile()
-# st_write(maj_aquifers, dsn = paste0(tmp, ".geojson"))
-# on.exit(unlink(tmp))
-# put_object(
-#   file = paste0(tmp, ".geojson"),
-#   object = "/state-drinking-water/TX/raw/major_aquifers.geojson",
-#   bucket = "tech-team-data",
-# )
-
-## Minor aquifers: https://www.twdb.texas.gov/mapping/gisdata/doc/minor_aquifers.zip
-# downloaded 1/23/2024
-file_loc <- "./data/raw/TX_minor_aquifers"
-download.file("https://www.twdb.texas.gov/mapping/gisdata/doc/minor_aquifers.zip", 
-              destfile = paste0(file_loc, ".zip"))
-unzip(zipfile = paste0(file_loc, ".zip"), exdir = file_loc) 
-file.remove(paste0(file_loc, ".zip"))
-minor_aquifers <- st_read(paste0(file_loc, "/Minor_Aquifers.shp")) %>%
-  janitor::clean_names()
-# tmp <- tempfile()
-# st_write(minor_aquifers, dsn = paste0(tmp, ".geojson"))
-# on.exit(unlink(tmp))
-# put_object(
-#   file = paste0(tmp, ".geojson"),
-#   object = "/state-drinking-water/TX/raw/TX_minor_aquifers.geojson",
-#   bucket = "tech-team-data",
-# )
-
-## Major river basins: https://www.twdb.texas.gov/mapping/gisdata/doc/Major_River_Basins_Shapefile.zip
-# downloaded 1/23/2024
-file_loc <- "./data/raw/TX_major_river_basins"
-download.file("https://www.twdb.texas.gov/mapping/gisdata/doc/Major_River_Basins_Shapefile.zip", 
-              destfile = paste0(file_loc, ".zip"))
-unzip(zipfile = paste0(file_loc, ".zip"), exdir = file_loc) 
-file.remove(paste0(file_loc, ".zip"))
-major_river_basins <- st_read(paste0(file_loc, "/TWDB_MRBs_2014.shp")) %>%
-  janitor::clean_names()
-# tmp <- tempfile()
-# st_write(major_river_basins, dsn = paste0(tmp, ".geojson"))
-# on.exit(unlink(tmp))
-# put_object(
-#   file = paste0(tmp, ".geojson"),
-#   object = "/state-drinking-water/TX/raw/major_river_basins.geojson",
-#   bucket = "tech-team-data",
-# )
-
-## Existing reservoirs: https://www.twdb.texas.gov/mapping/gisdata/doc/Existing_Reservoirs.zip
-# downloaded 1/23/2024
-file_loc <- "./data/raw/TX_reservoirs"
-download.file("https://www.twdb.texas.gov/mapping/gisdata/doc/Existing_Reservoirs.zip", 
-              destfile = paste0(file_loc, ".zip"))
-unzip(zipfile = paste0(file_loc, ".zip"), exdir = file_loc) 
-file.remove(paste0(file_loc, ".zip"))
-reservoirs <- st_read(paste0(file_loc, "/TWDB_SWP2012_Major_Reservoirs.shp")) %>%
-  janitor::clean_names()
-# tmp <- tempfile()
-# st_write(reservoirs, dsn = paste0(tmp, ".geojson"))
-# on.exit(unlink(tmp))
-# put_object(
-#   file = paste0(tmp, ".geojson"),
-#   object = "/state-drinking-water/TX/raw/reservoirs.geojson",
-#   bucket = "tech-team-data",
-# )
-
-## Surface water 303(d) river basin impairment: https://texaswaterexplorer.tnc.org/index.html
-# downloaded 1/24/2024
-file_loc <- "./data/raw/TX_basin_impairment_2012"
-download.file("https://texaswaterexplorer.tnc.org/downloads/Data_WQImpairment.zip", 
-              destfile = paste0(file_loc, ".zip"))
-unzip(zipfile = paste0(file_loc, ".zip"), exdir = file_loc) 
-file.remove(paste0(file_loc, ".zip"))
-basin_impairment <- readxl::read_excel(paste0(file_loc, "/Data_WQImpairment.xlsx"), sheet = "Basins")%>%
-  janitor::clean_names()
-# tmp <- tempfile()
-# write.csv(basin_impairment, file = paste0(tmp, ".csv"))
-# on.exit(unlink(tmp))
-# put_object(
-#   file = paste0(tmp, ".csv"),
-#   object = "/state-drinking-water/TX/raw/basin_impairment.csv",
-#   bucket = "tech-team-data",
-# )
-
 ## Reservoir levels: https://www.waterdatafortexas.org/reservoirs/statewide
 # downloaded Jan 24 2024 
-# only recent conditions: 
+# NOTE: only recent conditions - update more frequently?
 res_levels <- read.csv("http://www.waterdatafortexas.org/reservoirs/recent-conditions.csv")
 # writing to aws: 
-# tmp <- tempfile()
-# write.csv(res_levels, file = paste0(tmp, ".csv"))
-# on.exit(unlink(tmp))
-# put_object(
-#   file = paste0(tmp, ".csv"),
-#   object = "/state-drinking-water/TX/raw/TX_reservoir_levels_recent.csv",
-#   bucket = "tech-team-data",
-# )
+tmp <- tempfile()
+write.csv(res_levels, file = paste0(tmp, ".csv"))
+on.exit(unlink(tmp))
+put_object(
+  file = paste0(tmp, ".csv"),
+  object = "/state-drinking-water/TX/raw/TX_reservoir_levels_recent.csv",
+  bucket = "tech-team-data",
+)
 
 # grabbing historic reservoir levels: 
 tx_res <- c("brazos", "canadian", "colorado", "cypress", "guadalupe", "lavaca", 
@@ -403,33 +146,66 @@ res_data$year <- year(res_data$date)
 res_data_filtered <- res_data %>%
   filter(year >= 2013)
 # writing to aws: 
-# tmp <- tempfile()
-# write.csv(res_data_filtered, file = paste0(tmp, ".csv"))
-# on.exit(unlink(tmp))
-# put_object(
-#   file = paste0(tmp, ".csv"),
-#   object = "/state-drinking-water/TX/raw/TX_reservoir_levels_10yr.csv",
-#   bucket = "tech-team-data",
-# )
+tmp <- tempfile()
+write.csv(res_data_filtered, file = paste0(tmp, ".csv"))
+on.exit(unlink(tmp))
+put_object(
+  file = paste0(tmp, ".csv"),
+  object = "/state-drinking-water/TX/raw/TX_reservoir_levels_10yr.csv",
+  bucket = "tech-team-data",
+)
 
 ## Groundwater levels: https://www.waterdatafortexas.org/groundwater
 # downloaded Jan 24 2024 
-# only recent conditions: 
+# NOTE: only recent conditions - update more frequently?
 well_levels <- read.csv("https://www.waterdatafortexas.org/groundwater/recent-conditions.csv") %>%
   janitor::clean_names()
 # writing to aws: 
-# tmp <- tempfile()
-# write.csv(well_levels, file = paste0(tmp, ".csv"))
-# on.exit(unlink(tmp))
-# put_object(
-#   file = paste0(tmp, ".csv"),
-#   object = "/state-drinking-water/TX/raw/TX_recent_well_levels.csv",
-#   bucket = "tech-team-data",
-# )
-# grabbing historic data for wells is difficult because they have
-# different loggers and therefore different column names (i.e., some have temp 
-# and others don't) - decided to pull historic well data as needed. 
+tmp <- tempfile()
+write.csv(well_levels, file = paste0(tmp, ".csv"))
+on.exit(unlink(tmp))
+put_object(
+  file = paste0(tmp, ".csv"),
+  object = "/state-drinking-water/TX/raw/TX_recent_well_levels.csv",
+  bucket = "tech-team-data",
+)
+```
+## Data Download: Water Delivery System 
+```{r}
+## Water Delivery System #######################################################
+# grabbing SDWIS data - currently looking at all of them by leaving cont_code
+# as blank
+sdwis <- get_SDWIS(pwsids = pwsids, 
+                   cont_code = c())
+tmp <- tempfile()
+write.csv(sdwis, file = tmp)
+on.exit(unlink(tmp))
+put_object(
+  file = tmp,
+  object = "/state-drinking-water/TX/raw/TX_sdwis.csv",
+  bucket = "tech-team-data",
+)
+```
+## Data Download: Financial
+```{r}
+# TX DAC - whether they are likely to qualify for DAC status: 
+## Water rates: https://raw.githubusercontent.com/NIEPS-Water-Program/water-affordability/main/www/data/all_rates_table_current.csv
+# downloaded Jan 31 2024
+raw_link <- "https://raw.githubusercontent.com/NIEPS-Water-Program/water-affordability/main/www/data/all_rates_table_current.csv"
+temp_file <- tempfile(fileext = ".csv")
+water_rates <- GET(raw_link, write_disk(path = temp_file))
+water_rates <- read.csv(temp_file) %>%
+  janitor::clean_names()
+# filtering for just TX data, and household use == 6000 
+tx_rates <- water_rates[grepl("TX", water_rates$pwsid),] %>%
+  filter(hh_use == 6000) %>%
+  select(c("pwsid", "category", "hh_use", "total_water", "total_sewer")) %>%
+  mutate(total_water_year = total_water*12, 
+         total_sewer_year = total_sewer*12)
+```
 
+## Data Download: Requires manually downloading the data 
+```{r}
 # Climate Vulnerability Index: https://map.climatevulnerabilityindex.org/map/cvi_overall/usa?mapBoundaries=Tract&mapFilter=0&reportBoundaries=Tract&geoContext=State
 # manually downloaded from dropbox on Jan 26 2024 (there is no api) and 
 # added to my ./data/raw folder: 
@@ -437,17 +213,16 @@ cvi <- readxl::read_excel("./data/raw/MasterCVIDataset_Oct2023.xlsx",
            sheet = "Domain CVI Values") %>%
   filter(State == "TX") %>%
   janitor::clean_names()
-# write.csv(cvi, "./data/raw/TX_CVI.csv")
-# just a note that this other sheet exists which contains ~180 other stats 
-# (some are health-related) for each census tract: 
-# indicator_native_units <- readxl::read_excel("./data/raw/MasterCVIDataset_Oct2023.xlsx", 
-#            sheet = "Indicator Native Units") %>%
-#   filter(State == "TX") %>%
-#   janitor::clean_names()
-```
+# writing to aws: 
+tmp <- tempfile()
+write.csv(cvi, file = paste0(tmp, ".csv"))
+on.exit(unlink(tmp))
+put_object(
+  file = paste0(tmp, ".csv"),
+  object = "/state-drinking-water/TX/raw/TX_CVI.csv",
+  bucket = "tech-team-data",
+)
 
-Water Delivery System
-```{r}
 ## Historic use estimates: https://www.twdb.texas.gov/waterplanning/waterusesurvey/estimates/index.asp
 # downloaded Jan 24 2024
 # Without an api or data download link, I manually downloaded data from 
@@ -459,104 +234,34 @@ year_use_estimates <- lapply(paste0(folder, files), read.csv, header = TRUE)
 historic_use <- do.call(rbind, year_use_estimates) %>%
   janitor::clean_names()
 # writing to aws: 
-# tmp <- tempfile()
-# write.csv(historic_use, file = paste0(tmp, ".csv"))
-# on.exit(unlink(tmp))
-# put_object(
-#   file = paste0(tmp, ".csv"),
-#   object = "/state-drinking-water/TX/raw/TX_historic_use_estimates.csv",
-#   bucket = "tech-team-data",
-# )
+tmp <- tempfile()
+write.csv(historic_use, file = paste0(tmp, ".csv"))
+on.exit(unlink(tmp))
+put_object(
+  file = paste0(tmp, ".csv"),
+  object = "/state-drinking-water/TX/raw/TX_historic_use_estimates.csv",
+  bucket = "tech-team-data",
+)
 
 ## Water loss audits: https://www.twdb.texas.gov/conservation/municipal/waterloss/historical-annual-report.asp
 # downloaded Jan 24 2024
-## This requires merging in downloaded file, looping over to cleaning and then merge - 
-# code added below when loading all of the data
-
-
-## 2022 TX State Water Plan: https://2022.texasstatewaterplan.org/statewide?
-# downloaded Jan 29 2024
-pop <- read.csv("https://2022.texasstatewaterplan.org/download/statewide/population") %>%
-  janitor::clean_names()
-demands <- read.csv("https://2022.texasstatewaterplan.org/download/statewide/demands") %>%
-  janitor::clean_names()
-supp <- read.csv("https://2022.texasstatewaterplan.org/download/statewide/supplies") %>%
-  janitor::clean_names()
-needs <- read.csv("https://2022.texasstatewaterplan.org/download/statewide/needs") %>%
-  janitor::clean_names()
-strat <- read.csv("https://2022.texasstatewaterplan.org/download/statewide/strategies") %>%
-  janitor::clean_names()
-# writing to aws: 
-# tmp <- tempfile()
-# write.csv(strat, file = paste0(tmp, ".csv"))
-# on.exit(unlink(tmp))
-# put_object(
-#   file = paste0(tmp, ".csv"),
-#   object = "/state-drinking-water/TX/raw/TX_2022_SWP/strat.csv",
-#   bucket = "tech-team-data",
-# )
-```
-
-Financial
-```{r}
-## Water affordability: https://github.com/NIEPS-Water-Program/water-affordability/raw/main/data/rates_data/rates_tx.xlsx
-# downloaded Jan 24 2024
-link <- "https://github.com/NIEPS-Water-Program/water-affordability/raw/main/data/rates_data/rates_tx.xlsx"
-temp_file <- tempfile(fileext = ".xlsx")
-water_aff <- GET(github_link, write_disk(path = temp_file))
-water_aff <- readxl::read_excel(temp_file) %>%
-  janitor::clean_names()
-# writing to aws: 
-# tmp <- tempfile()
-# write.csv(water_aff, file = paste0(tmp, ".csv"))
-# on.exit(unlink(tmp))
-# put_object(
-#   file = paste0(tmp, ".csv"),
-#   object = "/state-drinking-water/TX/raw/TX_water_affordability.csv",
-#   bucket = "tech-team-data",
-# )
-
-## Danielle's SRF analysis: 
-gs4_deauth()
-URL <- "https://docs.google.com/spreadsheets/d/1kUHLdzFjwmKx4r6YTu2qjxwNuuG5JeUi/edit#gid=1618705547"
-non_applying_cities <- read_sheet(URL, sheet = "Analysis")
-```
-
-East TX 
-```{r}
-# TX counties in East Texas (done with some webpage scraping): 
-east_TX <- read.csv("./data/raw/east_TX_counties.csv") %>%
-  select(-X) %>%
-  janitor::clean_names()
+# This requires merging in downloaded file that is stored in s3 as 
+# TX_historic_use_estimates.csv, looping over to cleaning and then merge 
 ```
 
 _______________________________________________________________________________
-Loading all data for TX:
+### Data Collating - pulling data from APIs, web links, or S3 buckets:  Data here are either pulled from S3 (see code above for how they got there) or downloaded easily from websites or APIs
 _______________________________________________________________________________
-```{r}
-## National datasets: ##########################################################
-# Reading SDWIS, SABs x Census, and CEJST from buckets: 
-sdwis_tidy <- aws.s3::s3read_using(read.csv, 
-                           object = "state-drinking-water/TX/raw/TX_sdwis.csv", 
-                           bucket = "tech-team-data")
+## Data Collating: Demographic
+```{r data collating}
+## Demographic #################################################################
+# SABs
 sab_census <- aws.s3::s3read_using(st_read, 
                            object = "state-drinking-water/TX/raw/TX_sab_census.geojson",
                            bucket = "tech-team-data")
-## CEJST v1.0: 
-## Pulled Jan 31 2023:s3://tech-team-data/ej-data/cejest-v1/1.0-communities.csv
-## Note using file stored in tech-team-data/ej-data to preserve single conical data practice (SCDP)
-cejst_raw <- aws.s3::s3read_using(read.csv, object = "s3://tech-team-data/ej-data/cejest-v1/1.0-communities.csv")
-
-## Selecting variables we need (different then block level acs estimate data) ## 
-## census_tract_2010_id
-## total_threshold_criteria_exceeded
-## total_categories_exceeded 
-## identified_as_disadvantaged
-## percentage_of_tract_that_is_disadvantaged_by_area
-## total_population 
-cejst_cleaned <- cejst_raw %>%
+# CEJST
+cejst_raw <- aws.s3::s3read_using(read.csv, object = "s3://tech-team-data/ej-data/cejest-v1/1.0-communities.csv") %>%
   janitor::clean_names() %>%
-  # added filter for TX data: 
   filter(state_territory == "Texas") %>%
   select(c("census_tract_2010_id","total_threshold_criteria_exceeded",
            "total_categories_exceeded","identified_as_disadvantaged",
@@ -570,14 +275,20 @@ svi <- aws.s3::s3read_using(read.csv,
 # Climate Vulnerability Index: 
 cvi <- aws.s3::s3read_using(read.csv, 
                             object = "s3://tech-team-data/state-drinking-water/TX/raw/TX_CVI.csv")
+```
+## Data Collating: Environmental
+```{r}
+## Environmental ###############################################################
+## Surface water intake locations: https://gis-tceq.opendata.arcgis.com/datasets/TCEQ::surface-intakes/api
+# Pulled Jan 22 2024 
+sw_intake <- GET("https://gisweb.tceq.texas.gov/arcgis/rest/services/Public/PWS/MapServer/1/query?where=1%3D1&outFields=*&outSR=4326&f=json")
+sw_intake_tidy <- fromJSON(rawToChar(sw_intake$content))$features$attribute %>%
+  as.data.frame() %>%
+  janitor::clean_names() %>%
+  rename(pwsid = pws_id) %>%
+  mutate(pwsid = paste0("TX", pwsid))
 
-## TX-specific datasets: #######################################################
-## Environmental: 
-# surface water intake locations: 
-sw_intake <- aws.s3::s3read_using(read.csv, 
-                               object = "s3://tech-team-data/state-drinking-water/TX/raw/TX_sw_intake.csv") 
-
-# groundwater quality & levels: 
+## groundwater quality & levels: 
 # function for reading gwdb tables, which have unique separators: 
 read_gwdb_table <- function(x) {
      read.table(x, header = TRUE, fill = TRUE, sep = "|")
@@ -613,21 +324,66 @@ wl_other <- aws.s3::s3read_using(read_gwdb_table,
 # let's just combine all of these 
 well_wl <- rbind(wl_major, wl_minor, wl_other)
 
-# major aquifers
-major_aquifers <- aws.s3::s3read_using(st_read, 
-                                       object = "s3://tech-team-data/state-drinking-water/TX/raw/major_aquifers.geojson")
-# minor aquifers 
-minor_aquifers <- aws.s3::s3read_using(st_read, 
-                                       object = "s3://tech-team-data/state-drinking-water/TX/raw/minor_aquifers.geojson")
-# major river basins
-major_river_basins <- aws.s3::s3read_using(st_read, 
-                                       object = "s3://tech-team-data/state-drinking-water/TX/raw/major_river_basins.geojson")
-# existing reservoirs
-reservoirs <- aws.s3::s3read_using(st_read, 
-                                       object = "s3://tech-team-data/state-drinking-water/TX/raw/reservoirs.geojson")
-# surface water river basin impairment
-basin_impairment <- aws.s3::s3read_using(read.csv, 
-                                         object = "s3://tech-team-data/state-drinking-water/TX/raw/basin_impairment.csv")
+## Major aquifers: https://www.twdb.texas.gov/mapping/gisdata/doc/major_aquifers.zip
+# downloaded 1/23/2024
+file_loc <- "./data/raw/TX_major_aquifers"
+download.file("https://www.twdb.texas.gov/mapping/gisdata/doc/major_aquifers.zip", 
+              destfile = paste0(file_loc, ".zip"))
+unzip(zipfile = paste0(file_loc, ".zip"), exdir = file_loc) 
+file.remove(paste0(file_loc, ".zip"))
+maj_aquifers <- st_read(paste0(file_loc, "/NEW_major_aquifers_dd.shp")) %>%
+  janitor::clean_names()
+
+## Major aquifers: https://www.twdb.texas.gov/mapping/gisdata/doc/major_aquifers.zip
+# downloaded 1/23/2024
+file_loc <- "./data/raw/TX_major_aquifers"
+download.file("https://www.twdb.texas.gov/mapping/gisdata/doc/major_aquifers.zip", 
+              destfile = paste0(file_loc, ".zip"))
+unzip(zipfile = paste0(file_loc, ".zip"), exdir = file_loc) 
+file.remove(paste0(file_loc, ".zip"))
+maj_aquifers <- st_read(paste0(file_loc, "/NEW_major_aquifers_dd.shp")) %>%
+  janitor::clean_names()
+
+## Minor aquifers: https://www.twdb.texas.gov/mapping/gisdata/doc/minor_aquifers.zip
+# downloaded 1/23/2024
+file_loc <- "./data/raw/TX_minor_aquifers"
+download.file("https://www.twdb.texas.gov/mapping/gisdata/doc/minor_aquifers.zip", 
+              destfile = paste0(file_loc, ".zip"))
+unzip(zipfile = paste0(file_loc, ".zip"), exdir = file_loc) 
+file.remove(paste0(file_loc, ".zip"))
+minor_aquifers <- st_read(paste0(file_loc, "/Minor_Aquifers.shp")) %>%
+  janitor::clean_names()
+
+## Major river basins: https://www.twdb.texas.gov/mapping/gisdata/doc/Major_River_Basins_Shapefile.zip
+# downloaded 1/23/2024
+file_loc <- "./data/raw/TX_major_river_basins"
+download.file("https://www.twdb.texas.gov/mapping/gisdata/doc/Major_River_Basins_Shapefile.zip", 
+              destfile = paste0(file_loc, ".zip"))
+unzip(zipfile = paste0(file_loc, ".zip"), exdir = file_loc) 
+file.remove(paste0(file_loc, ".zip"))
+major_river_basins <- st_read(paste0(file_loc, "/TWDB_MRBs_2014.shp")) %>%
+  janitor::clean_names()
+
+## Existing reservoirs: https://www.twdb.texas.gov/mapping/gisdata/doc/Existing_Reservoirs.zip
+# downloaded 1/23/2024
+file_loc <- "./data/raw/TX_reservoirs"
+download.file("https://www.twdb.texas.gov/mapping/gisdata/doc/Existing_Reservoirs.zip", 
+              destfile = paste0(file_loc, ".zip"))
+unzip(zipfile = paste0(file_loc, ".zip"), exdir = file_loc) 
+file.remove(paste0(file_loc, ".zip"))
+reservoirs <- st_read(paste0(file_loc, "/TWDB_SWP2012_Major_Reservoirs.shp")) %>%
+  janitor::clean_names()
+
+## Surface water 303(d) river basin impairment: https://texaswaterexplorer.tnc.org/index.html
+# downloaded 1/24/2024
+file_loc <- "./data/raw/TX_basin_impairment_2012"
+download.file("https://texaswaterexplorer.tnc.org/downloads/Data_WQImpairment.zip", 
+              destfile = paste0(file_loc, ".zip"))
+unzip(zipfile = paste0(file_loc, ".zip"), exdir = file_loc) 
+file.remove(paste0(file_loc, ".zip"))
+basin_impairment <- readxl::read_excel(paste0(file_loc, "/Data_WQImpairment.xlsx"), sheet = "Basins")%>%
+  janitor::clean_names()
+
 # reservoir levels - recent
 recent_reservoir_levels <- aws.s3::s3read_using(read.csv, 
                                          object = "s3://tech-team-data/state-drinking-water/TX/raw/TX_reservoir_levels_recent.csv")
@@ -665,8 +421,10 @@ comined_viols <- rbind(viol_dec17, viol_dec3rd) %>%
   janitor::clean_names() %>%
   filter(water_system_no %in% tceq_cws$water_system_no) # 118,659
 # SDWIS contains 20,000 more violations  
-
-## Water Delivery System 
+```
+## Data Collating: Water Delivery System
+```{r}
+## Water Delivery System ######################################################
 # historic use estimates: 
 historic_use_estimates <-  aws.s3::s3read_using(read.csv, 
                                                 object = "s3://tech-team-data/state-drinking-water/TX/raw/TX_historic_use_estimates.csv")
@@ -712,19 +470,30 @@ waterloss_all <- rbind(waterloss_all,waterloss)
 year <- year + 1
 }
 
-# Texas water state plan: 
-TX_swp_pop <- aws.s3::s3read_using(read.csv,
-                                   object =  "s3://tech-team-data/state-drinking-water/TX/raw/TX_2022_SWP/population.csv")
-TX_swp_demands <- aws.s3::s3read_using(read.csv,
-                                   object =  "s3://tech-team-data/state-drinking-water/TX/raw/TX_2022_SWP/demands.csv")
-TX_swp_supp <- aws.s3::s3read_using(read.csv,
-                                   object =  "s3://tech-team-data/state-drinking-water/TX/raw/TX_2022_SWP/supplies.csv")
-TX_swp_needs <- aws.s3::s3read_using(read.csv,
-                                   object =  "s3://tech-team-data/state-drinking-water/TX/raw/TX_2022_SWP/needs.csv")
-TX_swp_strategies <- aws.s3::s3read_using(read.csv,
-                                   object =  "s3://tech-team-data/state-drinking-water/TX/raw/TX_2022_SWP/strategies.csv")
+## 2022 TX State Water Plan: https://2022.texasstatewaterplan.org/statewide?
+# downloaded Jan 29 2024
+pop <- read.csv("https://2022.texasstatewaterplan.org/download/statewide/population") %>%
+  janitor::clean_names()
+demands <- read.csv("https://2022.texasstatewaterplan.org/download/statewide/demands") %>%
+  janitor::clean_names()
+supp <- read.csv("https://2022.texasstatewaterplan.org/download/statewide/supplies") %>%
+  janitor::clean_names()
+needs <- read.csv("https://2022.texasstatewaterplan.org/download/statewide/needs") %>%
+  janitor::clean_names()
+strat <- read.csv("https://2022.texasstatewaterplan.org/download/statewide/strategies") %>%
+  janitor::clean_names()
+```
+## Data Collating: Financial 
+```{r}
+## Financial ##################################################################
+## Water affordability: https://github.com/NIEPS-Water-Program/water-affordability/raw/main/data/rates_data/rates_tx.xlsx
+# downloaded Jan 24 2024
+link <- "https://github.com/NIEPS-Water-Program/water-affordability/raw/main/data/rates_data/rates_tx.xlsx"
+temp_file <- tempfile(fileext = ".xlsx")
+water_aff <- GET(link, write_disk(path = temp_file))
+water_aff <- readxl::read_excel(temp_file) %>%
+  janitor::clean_names()
 
-## Financial 
 # PPL data & tidying 
 TX_PPL <- aws.s3::s3read_using(read.csv, 
                                object = "s3://water-team-data/clean_data/srf_project_priority_lists/web_ppl_combined_clean_v1-1.csv") %>%
@@ -733,13 +502,13 @@ TX_PPL <- aws.s3::s3read_using(read.csv,
   filter(State == "Texas") %>%
   janitor::clean_names()
 
-# water affordability: 
-water_aff <- aws.s3::s3read_using(read.csv, 
-                               object = "s3://tech-team-data/state-drinking-water/TX/raw/TX_water_affordability.csv") 
+## Danielle's SRF analysis: 
+gs4_deauth()
+URL <- "https://docs.google.com/spreadsheets/d/1kUHLdzFjwmKx4r6YTu2qjxwNuuG5JeUi/edit#gid=1618705547"
+non_applying_cities <- read_sheet(URL, sheet = "Analysis")
 ```
-
 _______________________________________________________________________________
-Organizing data into a list:
+### Organizing data into a list:
 _______________________________________________________________________________
 ```{r}
 # TX_data <- list()
@@ -750,3 +519,8 @@ _______________________________________________________________________________
 # # here's how you get the list entry out and into a data frame: 
 # sdwis <- do.call(data.frame, TX_data[[2]])
 ```
+
+
+
+
+
