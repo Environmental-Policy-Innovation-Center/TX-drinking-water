@@ -73,20 +73,74 @@ census_vars <- c(total_pop = "B01003_001",
                  other_lang = "B99162_003", 
                  no_school = "B15003_002", 
                  prof_degree = "B15003_024", 
-                 foreign = "B99051_005")
+                 foreign = "B99051_005", 
+                 pov_level_at_above_150 = "B06012_004")
 census <- tidycensus::get_acs(
-  geography = "block group", 
+  geography = "tract", 
   variables = census_vars, 
-  state = unique(sab$state_code), 
+  state = "TX", 
   year = 2021,
   geometry = TRUE
 )
 
-# crosswalking census stats with pwsids: 
-sab_census <- interp_sab_census(census_df = census, sab_df = sab, 
-                                total_pop_var = "estimate_total_pop", 
-                                white_alone_var = "estimate_white_alone")
-# SAB & Census:
+# adding counties: 
+census_tidy <- census
+counties <- unlist(strsplit(census_tidy$NAME, split = ","))
+census_tidy$counties <- trimws(counties[grepl("County", counties)])
+
+# grabbing tract crosswalk: 
+tract_crosswalk <-  aws.s3::s3read_using(read.csv, 
+                                         object = "s3://tech-team-data/pws_crosswalk/pws_census_tract_weighted_crosswalk.csv") %>%
+  select(-X) %>%
+  filter(pwsid %in% pwsids)
+
+# crosswalking census tract information with pwsids: 
+census_wide <- pivot_wider(census_tidy, 
+                           names_from = c("variable"), 
+                           values_from = c("estimate", "moe"))  
+# crosswalking census stats: 
+sab_cross_census <- merge(census_wide, 
+                          tract_crosswalk, 
+                          by.x = "GEOID", 
+                          by.y = "tract_geoid", all = T)
+
+# accounting for block weights by multiplying race stats by tract
+# parcel weights - purposefully leaving out mhi to calculate that using 
+# a weighted mean: 
+sab_cross_census_weight <- sab_cross_census %>% 
+  mutate(across(estimate_total_pop:estimate_prof_degree, ~.*tract_parcel_weight)) %>%
+    mutate(across(estimate_under_6:estimate_other_lang, ~.*tract_parcel_weight))
+
+# sum across pwsid, rounding to control for decimal places, and estimate mhi 
+# using a weighted mean: 
+sab_census_crosswalked <- sab_cross_census_weight %>%
+  group_by(pwsid) %>% 
+    summarize(across(estimate_total_pop:estimate_prof_degree, ~round(sum(.), 0)), 
+              estimate_mhi = weighted.mean(estimate_mhi, tract_parcel_weight, na.rm = TRUE), 
+              across(estimate_under_6:estimate_other_lang, ~round(sum(.), 0))) 
+
+# calculating percentage across census vars: 
+sab_census_per <- sab_census_crosswalked %>%
+  as.data.frame(.) %>%
+  select(starts_with(c("estimate", "pwsid"))) %>%
+  # leaving out columns that are totals or mhi:
+  mutate_at(vars(!c("estimate_total_pop", "estimate_mhi", "pwsid")), 
+            ~((./estimate_total_pop)*100)) %>%
+  relocate("pwsid") %>%
+  mutate(estimate_poc_alone = (100 - estimate_white_alone))
+# renaming columns for merging purposes: 
+colnames(sab_census_per) <- paste0(colnames(sab_census_per), "_per")
+
+# merging this back so we have the original numbers: 
+sab_census <- merge(sab_census_crosswalked, sab_census_per,
+                    by.x = "pwsid", by.y = "pwsid_per") %>%
+  select(-c("estimate_total_pop_per", "estimate_mhi_per"))
+
+# combining to service area boundary dataset: 
+sab_tidy <- sab
+sab_census <- merge(sab_tidy, as.data.frame(sab_census), by = "pwsid", all.x = T)
+
+# SAB & Census - writing this to s3: 
 tmp <- tempfile()
 st_write(sab_census, dsn = paste0(tmp, ".geojson"))
 on.exit(unlink(tmp))
@@ -202,6 +256,7 @@ tx_rates <- water_rates[grepl("TX", water_rates$pwsid),] %>%
   select(c("pwsid", "category", "hh_use", "total_water", "total_sewer")) %>%
   mutate(total_water_year = total_water*12, 
          total_sewer_year = total_sewer*12)
+# TODO: still needs tweaks & to be added to s3
 ```
 
 ## Data Download: Requires manually downloading the data 
@@ -502,10 +557,16 @@ TX_PPL <- aws.s3::s3read_using(read.csv,
   filter(State == "Texas") %>%
   janitor::clean_names()
 
-## Danielle's SRF analysis: 
-gs4_deauth()
-URL <- "https://docs.google.com/spreadsheets/d/1kUHLdzFjwmKx4r6YTu2qjxwNuuG5JeUi/edit#gid=1618705547"
-non_applying_cities <- read_sheet(URL, sheet = "Analysis")
+## Danielle's SRF analysis: had to download it using a different method because 
+# it's an excel file that's stored on google drive - so it's not actually a 
+# google sheet. 
+# downloaded 2/1/2024 
+dl <- googledrive::drive_download(
+  as_id(URL),
+  path = 'temp1.xlsx', 
+  type = "xlsx")
+cwsrf_by_rank <- readxl::read_excel('temp1.xlsx', sheet = "CWSRF By Rank", 
+                                        skip = 1, col_names = TRUE)
 ```
 _______________________________________________________________________________
 ### Organizing data into a list:
