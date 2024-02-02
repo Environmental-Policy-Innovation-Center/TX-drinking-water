@@ -302,6 +302,11 @@ put_object(
 # downloaded Jan 24 2024
 # This requires merging in downloaded file that is stored in s3 as 
 # TX_historic_use_estimates.csv, looping over to cleaning and then merge 
+
+## CDC SVI: https://www.atsdr.cdc.gov/placeandhealth/svi/interactive_map.html
+# downloaded Jan 26 2024
+# This requires merging in downloaded file that is stored in s3 as 
+# TX_SVI_2020.csv
 ```
 
 _______________________________________________________________________________
