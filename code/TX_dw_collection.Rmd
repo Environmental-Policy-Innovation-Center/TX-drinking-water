@@ -256,6 +256,18 @@ tx_rates <- water_rates[grepl("TX", water_rates$pwsid),] %>%
   select(c("pwsid", "category", "hh_use", "total_water", "total_sewer")) %>%
   mutate(total_water_year = total_water*12, 
          total_sewer_year = total_sewer*12)
+# need to merge this with mhi: 
+mhi <- aws.s3::s3read_using(st_read, 
+                           object = "state-drinking-water/TX/raw/TX_sab_census.geojson",
+                           bucket = "tech-team-data") %>%
+  select(c("pwsid", "estimate_mhi"))
+
+# calculating household cost factor: 
+tx_rates_hcf <- tx_rates %>%
+  left_join(mhi) %>%
+  mutate(hcf = (total_water_year + total_sewer_year)/estimate_mhi) %>%
+  filter(category == "inside")
+
 # TODO: still needs tweaks & to be added to s3
 ```
 
@@ -394,16 +406,6 @@ file.remove(paste0(file_loc, ".zip"))
 maj_aquifers <- st_read(paste0(file_loc, "/NEW_major_aquifers_dd.shp")) %>%
   janitor::clean_names()
 
-## Major aquifers: https://www.twdb.texas.gov/mapping/gisdata/doc/major_aquifers.zip
-# downloaded 1/23/2024
-file_loc <- "./data/raw/TX_major_aquifers"
-download.file("https://www.twdb.texas.gov/mapping/gisdata/doc/major_aquifers.zip", 
-              destfile = paste0(file_loc, ".zip"))
-unzip(zipfile = paste0(file_loc, ".zip"), exdir = file_loc) 
-file.remove(paste0(file_loc, ".zip"))
-maj_aquifers <- st_read(paste0(file_loc, "/NEW_major_aquifers_dd.shp")) %>%
-  janitor::clean_names()
-
 ## Minor aquifers: https://www.twdb.texas.gov/mapping/gisdata/doc/minor_aquifers.zip
 # downloaded 1/23/2024
 file_loc <- "./data/raw/TX_minor_aquifers"
@@ -446,15 +448,18 @@ basin_impairment <- readxl::read_excel(paste0(file_loc, "/Data_WQImpairment.xlsx
 
 # reservoir levels - recent
 recent_reservoir_levels <- aws.s3::s3read_using(read.csv, 
-                                         object = "s3://tech-team-data/state-drinking-water/TX/raw/TX_reservoir_levels_recent.csv")
+                                         object = "s3://tech-team-data/state-drinking-water/TX/raw/TX_reservoir_levels_recent.csv") %>%
+  select(-X)
 
 # reservoir levels - historic
 reservoir_levels_10yr <- aws.s3::s3read_using(read.csv, 
-                                         object = "s3://tech-team-data/state-drinking-water/TX/raw/TX_reservoir_levels_10yr.csv")
+                                         object = "s3://tech-team-data/state-drinking-water/TX/raw/TX_reservoir_levels_10yr.csv") %>%
+  select(-X)
 
 # groundwater levels
 recent_well_levels <- aws.s3::s3read_using(read.csv, 
-                                           object = "s3://tech-team-data/state-drinking-water/TX/raw/TX_recent_well_levels.csv")
+                                           object = "s3://tech-team-data/state-drinking-water/TX/raw/TX_recent_well_levels.csv") %>%
+  select(-X)
 
 # TCEQ DWW system data: 
 # NOTE: there is A TON more information in s3 for us to pull like enforcement 
@@ -477,7 +482,7 @@ viol_dec17 <- aws.s3::s3read_using(read.csv,
                                       object = "s3://tech-team-data/state-drinking-water/TX/raw/TX_TCEQ_DWW/TX_20231217/Violations/TX_Individual Violations_20231217_20231229203427.csv") 
 viol_dec3rd <- aws.s3::s3read_using(read.csv, 
                                       object = "s3://tech-team-data/state-drinking-water/TX/raw/TX_TCEQ_DWW/TX_20231203/Violations/TX_Individual Violations_20231203.csv") 
-comined_viols <- rbind(viol_dec17, viol_dec3rd) %>%
+combined_viols <- rbind(viol_dec17, viol_dec3rd) %>%
   janitor::clean_names() %>%
   filter(water_system_no %in% tceq_cws$water_system_no) # 118,659
 # SDWIS contains 20,000 more violations  
@@ -487,7 +492,14 @@ comined_viols <- rbind(viol_dec17, viol_dec3rd) %>%
 ## Water Delivery System ######################################################
 # historic use estimates: 
 historic_use_estimates <-  aws.s3::s3read_using(read.csv, 
-                                                object = "s3://tech-team-data/state-drinking-water/TX/raw/TX_historic_use_estimates.csv")
+                                                object = "s3://tech-team-data/state-drinking-water/TX/raw/TX_historic_use_estimates.csv") %>%
+  select(-X)
+# need to fix the pwsid column: 
+for(i in 1:nrow(historic_use_estimates)){
+  historic_use_estimates$pwsid[i] <- paste0("TX", paste(rep(0, (7-nchar(historic_use_estimates$tceq_pws_code[i]))), 
+                                                        collapse = ""), 
+                                            historic_use_estimates$tceq_pws_code[i], collapse = "")
+}
 
 # water loss audits
 # vector of cleaned column names 
@@ -556,7 +568,7 @@ water_aff <- readxl::read_excel(temp_file) %>%
 
 # PPL data & tidying 
 TX_PPL <- aws.s3::s3read_using(read.csv, 
-                               object = "s3://water-team-data/clean_data/srf_project_priority_lists/web_ppl_combined_clean_v1-1.csv") %>%
+                               object = "s3://water-team-data/clean_data/srf_project_priority_lists/web_ppl_combined_clean.csv") %>%
   mutate(across('Project.Type', 
                 str_replace, 'Other', 'General')) %>%
   filter(State == "Texas") %>%
@@ -566,6 +578,7 @@ TX_PPL <- aws.s3::s3read_using(read.csv,
 # it's an excel file that's stored on google drive - so it's not actually a 
 # google sheet. 
 # downloaded 2/1/2024 
+URL <- "https://docs.google.com/spreadsheets/d/1kUHLdzFjwmKx4r6YTu2qjxwNuuG5JeUi/edit#gid=252194392"
 dl <- googledrive::drive_download(
   as_id(URL),
   path = 'temp1.xlsx', 
@@ -586,7 +599,19 @@ _______________________________________________________________________________
 # sdwis <- do.call(data.frame, TX_data[[2]])
 ```
 
+NEXT STEPS: 
+questions: 
+- Well numbers to pwsids 
+- % people on well water in east TX 
+- do people think about water at the county scale?
+- Incorporating Danielle's SRF analysis 
+- TX SRF data - next Friday 
 
+steps: 
+- adding this to a list and the onto S3
+- breaking collection & merging script 
+- function that takes list from s3 and queries for categories 
+- crosswalk data frame included as metadata in the list 
 
 
 
