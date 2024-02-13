@@ -19,6 +19,7 @@ library(httr)
 library(readxl)
 library(jsonlite)
 library(googlesheets4)
+library(googledrive)
 # remotes::install_github("environmental-policy-innovation-center/stateDW", 
 #                         auth_token = "insert-github-pat-here")
 library(stateDW)
@@ -55,7 +56,8 @@ cejst_raw <- aws.s3::s3read_using(read.csv, object = "s3://tech-team-data/ej-dat
 
 # Social Vulnerability Index 
 svi <- aws.s3::s3read_using(read.csv, 
-                            object = "s3://tech-team-data/state-drinking-water/TX/raw/TX_SVI_2020.csv")
+                            object = "s3://tech-team-data/state-drinking-water/TX/raw/TX_SVI_2020.csv") %>%
+  janitor::clean_names()
 
 # Climate Vulnerability Index: 
 cvi <- aws.s3::s3read_using(read.csv, 
@@ -64,6 +66,15 @@ cvi <- aws.s3::s3read_using(read.csv,
 # TX EJ Screen: 
 tx_ejscreen <- aws.s3::s3read_using(read.csv, 
                                     object = "s3://tech-team-data/state-drinking-water/TX/raw/TX_ejscreen.csv")
+
+# Adding this into a larger list: 
+TX_demographic <- list()
+TX_demographic[[1]] <- sab_census
+TX_demographic[[2]] <- cejst_raw
+TX_demographic[[3]] <- tx_ejscreen
+TX_demographic[[4]] <- svi
+TX_demographic[[5]] <- cvi
+names(TX_demographic) <- c("census", "cejst", "ejscreen", "svi", "cvi")
 ```
 ## Environmental
 ```{r}
@@ -178,31 +189,31 @@ recent_well_levels <- aws.s3::s3read_using(read.csv,
                                            object = "s3://tech-team-data/state-drinking-water/TX/raw/TX_recent_well_levels.csv") %>%
   select(-X)
 
-# TCEQ DWW system data: 
-# NOTE: there is A TON more information in s3 for us to pull like enforcement 
-# actions, etc. but starting the structure here for grabbing that information
-# pulling data from two different webscraping events and locating pwsids that 
-# are community water systems: 
-water_details_dec17 <- aws.s3::s3read_using(read.csv, 
-                                      object = "s3://tech-team-data/state-drinking-water/TX/raw/TX_TCEQ_DWW/TX_20231217/WaterSystemDetail/TX_Water System Details_20231217_20231229203427.csv") 
-water_details_dec3rd <- aws.s3::s3read_using(read.csv, 
-                                      object = "s3://tech-team-data/state-drinking-water/TX/raw/TX_TCEQ_DWW/TX_20231203/WaterSystemDetail/TX_Water System Details_20231203.csv") 
-combined_details <- rbind(water_details_dec17, water_details_dec3rd)
-water_details <- pivot_wider(combined_details, names_from = "Type", values_from = "Value") %>%
-  janitor::clean_names()
-# grabbing just community water systems (tceq has 10k that are not cws): 
-tceq_cws <- water_details %>%
-  filter(system_type == "C") # 4666
+# Adding this into a larger list
+# surface water: 
+TX_enviro_surface <- list()
+TX_enviro_surface[[1]] <- sw_intake_tidy
+TX_enviro_surface[[2]] <- reservoirs
+TX_enviro_surface[[3]] <- recent_reservoir_levels
+TX_enviro_surface[[4]] <- reservoir_levels_10yr
+TX_enviro_surface[[5]] <- major_river_basins
+TX_enviro_surface[[6]] <- basin_impairment
+names(TX_enviro_surface) <- c("surface_water_intakes", "reservoirs",
+                              "reservoir_levels_recent", "reservoir_levels_10yr", 
+                              "major_river_basins", "impaired_basins")
 
-# pulling violations: 
-viol_dec17 <- aws.s3::s3read_using(read.csv, 
-                                      object = "s3://tech-team-data/state-drinking-water/TX/raw/TX_TCEQ_DWW/TX_20231217/Violations/TX_Individual Violations_20231217_20231229203427.csv") 
-viol_dec3rd <- aws.s3::s3read_using(read.csv, 
-                                      object = "s3://tech-team-data/state-drinking-water/TX/raw/TX_TCEQ_DWW/TX_20231203/Violations/TX_Individual Violations_20231203.csv") 
-combined_viols <- rbind(viol_dec17, viol_dec3rd) %>%
-  janitor::clean_names() %>%
-  filter(water_system_no %in% tceq_cws$water_system_no) # 118,659
-# SDWIS contains 20,000 more violations  
+# ground water: 
+TX_enviro_ground <- list()
+TX_enviro_ground[[1]] <- minor_aquifers
+TX_enviro_ground[[2]] <- maj_aquifers
+TX_enviro_ground[[3]] <- well_main
+TX_enviro_ground[[4]] <- recent_well_levels
+TX_enviro_ground[[5]] <- well_wl
+TX_enviro_ground[[6]] <- well_wq
+names(TX_enviro_ground) <- c("minor_aquifers", "major_aquifers",
+                              "well_metadata",
+                              "well_levels_recent", "well_levels_historic", 
+                              "well_quality_historic")
 ```
 ## Water Delivery System
 ```{r}
@@ -271,19 +282,70 @@ needs <- read.csv("https://2022.texasstatewaterplan.org/download/statewide/needs
   janitor::clean_names()
 strat <- read.csv("https://2022.texasstatewaterplan.org/download/statewide/strategies") %>%
   janitor::clean_names()
+
+# TCEQ DWW system data: 
+# NOTE: there is A TON more information in s3 for us to pull like enforcement 
+# actions, etc. but starting the structure here for grabbing that information
+# pulling data from two different webscraping events and locating pwsids that 
+# are community water systems: 
+water_details_dec17 <- aws.s3::s3read_using(read.csv, 
+                                      object = "s3://tech-team-data/state-drinking-water/TX/raw/TX_TCEQ_DWW/TX_20231217/WaterSystemDetail/TX_Water System Details_20231217_20231229203427.csv") 
+water_details_dec3rd <- aws.s3::s3read_using(read.csv, 
+                                      object = "s3://tech-team-data/state-drinking-water/TX/raw/TX_TCEQ_DWW/TX_20231203/WaterSystemDetail/TX_Water System Details_20231203.csv") 
+combined_details <- rbind(water_details_dec17, water_details_dec3rd)
+water_details <- pivot_wider(combined_details, names_from = "Type", values_from = "Value") %>%
+  janitor::clean_names()
+# grabbing just community water systems (tceq has 10k that are not cws): 
+tceq_cws <- water_details %>%
+  filter(system_type == "C") # 4666
+
+# pulling violations: 
+viol_dec17 <- aws.s3::s3read_using(read.csv, 
+                                      object = "s3://tech-team-data/state-drinking-water/TX/raw/TX_TCEQ_DWW/TX_20231217/Violations/TX_Individual Violations_20231217_20231229203427.csv") 
+viol_dec3rd <- aws.s3::s3read_using(read.csv, 
+                                      object = "s3://tech-team-data/state-drinking-water/TX/raw/TX_TCEQ_DWW/TX_20231203/Violations/TX_Individual Violations_20231203.csv") 
+combined_viols <- rbind(viol_dec17, viol_dec3rd) %>%
+  janitor::clean_names() %>%
+  filter(water_system_no %in% tceq_cws$water_system_no) %>% # 118,659
+  rename(pwsid = water_system_no)
+# SDWIS contains 20,000 more violations
+
+# TX SDWIS violations: 
+sdwis <- aws.s3::s3read_using(read.csv, 
+                                      object = "s3://tech-team-data/state-drinking-water/TX/raw/TX_sdwis.csv") 
+
+# throwing this into a list: 
+TX_water_delivery <- list()
+TX_water_delivery[[1]] <- sdwis
+TX_water_delivery[[2]] <- combined_viols
+TX_water_delivery[[3]] <- historic_use_estimates
+TX_water_delivery[[4]] <- waterloss_all
+TX_water_delivery[[5]] <- pop 
+TX_water_delivery[[6]] <- demands
+TX_water_delivery[[7]] <- supp
+TX_water_delivery[[8]] <- needs
+TX_water_delivery[[9]] <- strat
+
+names(TX_water_delivery) <- c("sdwis", "tceq_viols",
+                              "historic_use_estimates",
+                              "water_loss", "TXSWP_pop", "TXSWP_demands",
+                              "TXSWP_supp", "TXSWP_needs", "TXSWP_strat")
 ```
 ## Financial 
 ```{r}
 ## Financial ##################################################################
-## Water affordability: https://github.com/NIEPS-Water-Program/water-affordability/raw/main/data/rates_data/rates_tx.xlsx
+## Water affordability - nixed b/c folded into the TX DAC definition - which 
+# incorporates TX water bills with mhi to estimate household cost factor 
+# https://github.com/NIEPS-Water-Program/water-affordability/raw/main/data/rates_data/rates_tx.xlsx
 # downloaded Jan 24 2024
-link <- "https://github.com/NIEPS-Water-Program/water-affordability/raw/main/data/rates_data/rates_tx.xlsx"
-temp_file <- tempfile(fileext = ".xlsx")
-water_aff <- GET(link, write_disk(path = temp_file))
-water_aff <- readxl::read_excel(temp_file) %>%
-  janitor::clean_names()
+# link <- "https://github.com/NIEPS-Water-Program/water-affordability/raw/main/data/rates_data/rates_tx.xlsx"
+# temp_file <- tempfile(fileext = ".xlsx")
+# water_aff <- GET(link, write_disk(path = temp_file))
+# water_aff <- readxl::read_excel(temp_file) %>%
+#   janitor::clean_names()
 
 # PPL data & tidying 
+# TODO: Update this when Phil finishes scraping TX's PPL
 TX_PPL <- aws.s3::s3read_using(read.csv, 
                                object = "s3://water-team-data/clean_data/srf_project_priority_lists/web_ppl_combined_clean.csv") %>%
   mutate(across('Project.Type', 
@@ -302,22 +364,19 @@ dl <- googledrive::drive_download(
   type = "xlsx")
 cwsrf_by_rank <- readxl::read_excel('temp1.xlsx', sheet = "CWSRF By Rank", 
                                         skip = 1, col_names = TRUE)
+file.remove("temp1.xlsx")
 
 ## TX DAC - whether they are likely to qualify for DAC status - requires pulling water affordability data and combining this with mhi
 TX_DAC <- aws.s3::s3read_using(st_read, 
                                object = "s3://tech-team-data/state-drinking-water/TX/raw/TX_DAC.geojson")
-```
-_______________________________________________________________________________
-### Organizing data into a list:
-_______________________________________________________________________________
-```{r}
-# TX_data <- list()
-# TX_data[[1]] <- sab_census
-# TX_data[[2]] <- sdwis_tidy
-# names(TX_data) <- c("census", "sdwis")
-# ... 
-# # here's how you get the list entry out and into a data frame: 
-# sdwis <- do.call(data.frame, TX_data[[2]])
+
+# throwing this into a list: 
+TX_financial <- list()
+TX_financial[[1]] <- TX_DAC
+TX_financial[[2]] <- TX_PPL
+TX_financial[[3]] <- cwsrf_by_rank
+names(TX_financial) <- c("TX_affordability_DAC", "TX_PPL",
+                         "SRF_analysis")
 ```
 
 NEXT STEPS: 
@@ -338,6 +397,3 @@ data collection
 - nixing cvi
 - incorporating CEJST specific metrics regarding whether disadv or not 
 - incorporate EJ screen (R package and then API) regarding water-specfic hazards 
-
-
-
