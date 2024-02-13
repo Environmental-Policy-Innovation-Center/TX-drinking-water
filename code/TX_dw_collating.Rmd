@@ -75,6 +75,7 @@ TX_demographic[[3]] <- tx_ejscreen
 TX_demographic[[4]] <- svi
 TX_demographic[[5]] <- cvi
 names(TX_demographic) <- c("census", "cejst", "ejscreen", "svi", "cvi")
+saveRDS(TX_demographic, file="./data/raw/TX_demographic_list.RData")
 ```
 ## Environmental
 ```{r}
@@ -201,6 +202,8 @@ TX_enviro_surface[[6]] <- basin_impairment
 names(TX_enviro_surface) <- c("surface_water_intakes", "reservoirs",
                               "reservoir_levels_recent", "reservoir_levels_10yr", 
                               "major_river_basins", "impaired_basins")
+saveRDS(TX_enviro_surface, file="./data/raw/TX_enviro_surface_list.RData")
+
 
 # ground water: 
 TX_enviro_ground <- list()
@@ -214,6 +217,7 @@ names(TX_enviro_ground) <- c("minor_aquifers", "major_aquifers",
                               "well_metadata",
                               "well_levels_recent", "well_levels_historic", 
                               "well_quality_historic")
+saveRDS(TX_enviro_ground, file="./data/raw/TX_enviro_ground_list.RData")
 ```
 ## Water Delivery System
 ```{r}
@@ -330,6 +334,8 @@ names(TX_water_delivery) <- c("sdwis", "tceq_viols",
                               "historic_use_estimates",
                               "water_loss", "TXSWP_pop", "TXSWP_demands",
                               "TXSWP_supp", "TXSWP_needs", "TXSWP_strat")
+
+saveRDS(TX_water_delivery, file="./data/raw/TX_water_delivery_list.RData")
 ```
 ## Financial 
 ```{r}
@@ -363,7 +369,10 @@ dl <- googledrive::drive_download(
   path = 'temp1.xlsx', 
   type = "xlsx")
 cwsrf_by_rank <- readxl::read_excel('temp1.xlsx', sheet = "CWSRF By Rank", 
-                                        skip = 1, col_names = TRUE)
+                                        skip = 1, col_names = TRUE) %>%
+  janitor::clean_names() %>%
+  # selecting columns of interest: 
+  select(rank:sfy)
 file.remove("temp1.xlsx")
 
 ## TX DAC - whether they are likely to qualify for DAC status - requires pulling water affordability data and combining this with mhi
@@ -377,6 +386,17 @@ TX_financial[[2]] <- TX_PPL
 TX_financial[[3]] <- cwsrf_by_rank
 names(TX_financial) <- c("TX_affordability_DAC", "TX_PPL",
                          "SRF_analysis")
+
+saveRDS(TX_financial, file="./data/raw/TX_financial_list.RData")
+```
+
+## Data crosswalking key & loading lists: 
+```{r}
+demo <- readRDS("./data/raw/TX_demographic_list.RData")
+enviro_sw <- readRDS("./data/raw/TX_enviro_surface_list.RData")
+enviro_gw <- readRDS("./data/raw/TX_enviro_ground_list.RData")
+wds <- readRDS("./data/raw/TX_water_delivery_list.RData")
+fin <- readRDS("./data/raw/TX_financial_list.RData")
 ```
 
 NEXT STEPS: 
