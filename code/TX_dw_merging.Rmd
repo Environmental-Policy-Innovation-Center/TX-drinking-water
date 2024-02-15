@@ -1,0 +1,266 @@
+---
+title: "TX Drinking Water Data Merging"
+author: "EmmaLi Tsai"
+date: "2024-02-15"
+output: html_document
+---
+
+## Loading packages: 
+```{r}
+library(tidyverse)
+library(leaflet)
+library(sf)
+library(aws.s3)
+```
+
+## Loading lists of data:  
+```{r}
+# reading demographic, environmental (gw and sw), water delivery system (wds)
+# and financial lists generated in TX_dw_collating: 
+demo <- aws.s3::s3read_using(readRDS, 
+                            object = "s3://tech-team-data/state-drinking-water/TX/clean/TX_demographic_list.RData")
+enviro_sw <- aws.s3::s3read_using(readRDS, 
+                            object = "s3://tech-team-data/state-drinking-water/TX/clean/TX_enviro_surface_list.RData")
+enviro_gw <- aws.s3::s3read_using(readRDS, 
+                            object = "s3://tech-team-data/state-drinking-water/TX/clean/TX_enviro_ground_list.RData")
+wds <- aws.s3::s3read_using(readRDS, 
+                            object = "s3://tech-team-data/state-drinking-water/TX/clean/TX_water_delivery_list.RData")
+fin <- aws.s3::s3read_using(readRDS, 
+                            object = "s3://tech-team-data/state-drinking-water/TX/clean/TX_financial_list.RData")
+```
+
+## Merging: surface water (reservoirs, rivers, basins) to pwsids:
+```{r}
+# merging impaired water bodies with basin information: 
+basins <- enviro_sw$major_river_basins %>% 
+  left_join(., enviro_sw$impaired_basins, by = "basin_num") %>%
+  rename(basin_name_short = basin_name.x, 
+         basin_name_long = basin_name.y) %>%
+  select(!c("id", "label_no"))
+
+# st_intersection with reservoir boundaries to identify which reservoirs 
+# are in what basin: 
+res <- enviro_sw$reservoirs %>%
+  # dropping z coordinates: 
+  st_zm(., drop = TRUE) %>%
+  st_as_sf(.) %>%
+  st_transform(., crs = st_crs(basins)) 
+# switch off spherical geometry 
+sf_use_s2(FALSE)
+res_basin <- st_intersection(res, basins)
+
+# st_intersection with rivers to identify which basin they fall under: 
+rivers <- enviro_sw$rivers %>%
+  mutate(name = toupper(name)) %>%
+  rename(river_name = name)
+riv_basin <- st_intersection(rivers, basins) %>%
+  select(river_name:geometry) %>%
+  select(-shape_len) %>%
+  rename(res_name = river_name) %>%
+  mutate(type = "River", 
+         status = "Existing") %>%
+  unique()
+
+# combining rivers and reservoirs: 
+riv_res_basin <- rbind(riv_basin, res_basin)
+
+# matching reservoir, basins, and river with surface water intakes: 
+sw <- enviro_sw$surface_water_intakes %>%
+  select(-objectid) %>%
+  rename()
+
+sw_basins <- merge(riv_res_basin, sw, by.x = "res_name", by.y = "waterbody",
+                   all = TRUE) %>%
+  # removing reservoirs that are not a water supply 
+  filter(type == "Water Supply" | is.na(type) | type == "River")
+
+# converting sw points to sf object: 
+points_sf <- sw_basins %>%
+  as.data.frame() %>%
+  select(-geometry) %>%
+  filter(!(is.na(lat_dd)))  %>%
+  st_as_sf(., coords = c("long_dd", "lat_dd"), 
+           crs = st_crs(res_basin)) 
+
+# grabbing entries that are missing from the original merge and will require 
+# matching using st_intersection:
+no_match <- sw_basins %>%
+  filter(is.na(type)) 
+
+# intersection with a 0.01dd buffer to find nearby water bodies that likely 
+# match to the sw intake: 
+missing_sw <- points_sf %>%
+  filter(res_name %in% no_match$res_name) %>%
+  st_buffer(., dist = 0.01)
+
+sw_resbasin <- st_intersection(missing_sw, riv_res_basin) 
+sw_resbasin_tidy <- sw_resbasin %>%
+  select(c("res_name", pwsid:geometry)) 
+
+# join back to sw_basins - creating a new column to keep track of those 
+# that were merged via intersection: 
+sw_basins$alt_res_name <- "NA"
+
+sw_resbasin_tidy <- sw_resbasin_tidy %>%
+  relocate(basin_num.1:status.1) %>%
+  relocate(res_name) %>%
+  relocate(res_name.1, .after = geometry)
+
+# adding lat/long coords back and aligning columns & names: 
+sw_resbasin_tidy <- sw_basins %>% 
+  select(c("pwsid", "wtrsrc", "lat_dd", "long_dd")) %>%
+  as.data.frame() %>%
+  right_join(., sw_resbasin_tidy, by = c("pwsid", "wtrsrc")) %>%
+  select(-geometry.x) %>%
+  relocate(pwsid, .after = status.1) %>%
+  relocate(wtrsrc, .after = sys_name) %>%
+  relocate(c("lat_dd", "long_dd"), .after = opstat) %>%
+  unique()
+
+names(sw_resbasin_tidy) <- names(sw_basins)
+
+# grabbing completely non-matching surface water intakes to rbind to 
+# ones that were intersected
+comp_missing <- no_match %>%
+  filter(!(res_name %in% sw_resbasin_tidy$res_name)) %>%
+  mutate(alt_res_name = "NA")
+
+all_intersected <- rbind(sw_resbasin_tidy, comp_missing)
+
+# filtering sw_basins to remove the entries that were matched via intersection:  
+sw_basins_no_missing <- sw_basins %>%
+  filter(!is.na(type))
+
+# replacing intersected matches: 
+all_sw_intakes <- rbind(all_intersected, sw_basins_no_missing) %>%
+  mutate(alt_res_name = case_when(
+    alt_res_name == "NA" ~ res_name, 
+    TRUE ~ alt_res_name
+  ))
+
+# saving: 
+# TODO: add to s3?
+# st_write(all_sw_intakes, "./data/clean/pwsid_swaterbodies.geojson")
+
+# converting to points for plotting to see where there are still intakes 
+# missing water bodies: 
+sw_points_sf <- all_sw_intakes %>%
+  as.data.frame() %>%
+  select(-geometry) %>%
+  filter(!(is.na(lat_dd))) %>%
+  st_as_sf(., coords = c("long_dd", "lat_dd"), 
+           crs = st_crs(res_basin)) 
+
+wtrbdy_pal <- colorFactor(
+  palette = viridis::plasma(23),
+  domain = basins$baisn_name_short)
+
+leaflet() %>%
+  addProviderTiles(providers$CartoDB.VoyagerNoLabels, group = "Toner Lite") %>%
+  addPolygons(data = basins,
+              opacity = 9,
+              color = ~wtrbdy_pal(basin_name_short),
+              weight = 1,
+              label = paste0("basin: ", basins$basin_name_short)) %>%
+  addLegend("bottomright",
+            pal = wtrbdy_pal,
+            values = basins$basin_name_short,
+            title = "Basin",
+            opacity = 1) %>%
+  addPolygons(data = res_basin,
+              opacity = 9,
+              color = ~wtrbdy_pal(basin_name_short),
+              weight = 1,
+              label = paste0("res: ", res_basin$res_name, "; basin: ",
+                             res_basin$basin_name_short)) %>%
+  addCircleMarkers(data = sw_points_sf, 
+                   fill = ~wtrbdy_pal(basin_name_short), 
+                   color = ~wtrbdy_pal(basin_name_short), 
+                   weight = 3, 
+                   opacity = 9, 
+                   radius = 3, 
+                   label = paste0("pwsid: ", sw_points_sf$pwsid, "; waterbody: ", 
+                                  sw_points_sf$res_name, 
+                                  "; basin name: ", 
+                                  sw_points_sf$basin_name_short)) %>%
+  addPolylines(data = riv_basin,
+               opacity = 9,
+               color = ~wtrbdy_pal(basin_name_short),
+               weight = 2,
+               label = paste0("river: ", riv_basin$res_name))
+```
+
+## Merging: groundwater (aquifers, wells) to counties:
+```{r}
+# loading in minor and major aquifer boundaries: 
+minor_aquifers <- enviro_gw$minor_aquifers %>%
+  st_transform(., crs = st_crs(basins))
+
+major_aquifers <- enviro_gw$major_aquifers %>%
+  st_transform(., crs = st_crs(basins))
+
+well_metadata <- enviro_gw$well_metadata %>%
+  filter(nchar(latitude_dd) > 0) %>%
+  st_as_sf(., coords = c("longitude_dd", "latitude_dd"), 
+           crs = st_crs(basins)) 
+
+# plotting to investigate overlap between all of these: 
+aq_pal <- colorFactor(
+  palette = viridis::plasma(22),
+  domain = minor_aquifers$aqu_name)
+maj_aq_pal <- colorFactor(
+  palette = viridis::mako(9),
+  domain = major_aquifers$aq_name)
+
+leaflet() %>%
+  addProviderTiles(providers$CartoDB.VoyagerNoLabels, group = "Toner Lite") %>%
+  addPolygons(data = major_aquifers,
+              opacity = 9,
+              color = ~maj_aq_pal(aq_name),
+              weight = 1,
+              label = paste0("major aq: ", major_aquifers$aq_name)) %>%
+  addPolygons(data = minor_aquifers,
+              opacity = 9,
+              color = ~aq_pal(aqu_name),
+              weight = 1,
+              label = paste0("minor aq: ", minor_aquifers$aqu_name)) %>%
+  addLegend("bottomright",
+            pal = maj_aq_pal,
+            values = major_aquifers$aq_name,
+            title = "Major Aquifers",
+            opacity = 1) %>%
+  addLegend("bottomright",
+            pal = aq_pal,
+            values = minor_aquifers$aqu_name,
+            title = "Minor Aquifers",
+            opacity = 1)
+```
+
+
+## East TX counties
+```{r}
+# reading counties in east TX from a webscrape: 
+east_tx <- read.csv("./data/raw/east_TX_counties.csv") %>%
+  select(-X)
+
+# grabbing census geographies: 
+east_tx_geom <- census_tidy %>%
+  filter(counties %in% paste0(east_tx$county_name, " County")) %>%
+  group_by(counties) %>%
+  summarize()
+
+# grabbing the larger geography of TX
+tx_geom <- census_tidy %>%
+  summarize()
+
+leaflet() %>%
+  addProviderTiles(providers$CartoDB.VoyagerNoLabels, group = "Toner Lite") %>%
+  addPolygons(data = tx_geom, 
+              color = "grey", 
+              weight = 1) %>%
+  addPolygons(data = east_tx_geom,
+              opacity = 9,
+              color = "#333c6bff",
+              weight = 1)
+```
+
