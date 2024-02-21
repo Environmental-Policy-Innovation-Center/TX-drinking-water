@@ -27,6 +27,48 @@ wds <- aws.s3::s3read_using(readRDS,
                             object = "s3://tech-team-data/state-drinking-water/TX/clean/TX_water_delivery_list.RData")
 fin <- aws.s3::s3read_using(readRDS, 
                             object = "s3://tech-team-data/state-drinking-water/TX/clean/TX_financial_list.RData")
+
+# Also grabbing census geographies for data merging: 
+census_vars <- c(total_pop = "B01003_001")
+census <- tidycensus::get_acs(
+  geography = "tract", 
+  variables = census_vars, 
+  state = "TX", 
+  year = 2021,
+  geometry = TRUE
+)
+
+# adding counties: 
+census_tidy <- census
+counties <- unlist(strsplit(census_tidy$NAME, split = ","))
+census_tidy$counties <- trimws(counties[grepl("County", counties)])
+```
+ 
+## East TX counties
+```{r}
+# reading counties in east TX from a webscrape: 
+east_tx <- read.csv("./data/raw/east_TX_counties.csv") %>%
+  select(-X)
+
+# grabbing census geographies: 
+east_tx_geom <- census_tidy %>%
+  filter(counties %in% paste0(east_tx$county_name, " County")) %>%
+  group_by(counties) %>%
+  summarize()
+
+# grabbing the larger geography of TX
+tx_geom <- census_tidy %>%
+  summarize()
+
+leaflet() %>%
+  addProviderTiles(providers$CartoDB.VoyagerNoLabels, group = "Toner Lite") %>%
+  addPolygons(data = tx_geom, 
+              color = "grey", 
+              weight = 1) %>%
+  addPolygons(data = east_tx_geom,
+              opacity = 9,
+              color = "#333c6bff",
+              weight = 1)
 ```
 
 ## Merging: surface water (reservoirs, rivers, basins) to pwsids:
@@ -139,8 +181,13 @@ all_sw_intakes <- rbind(all_intersected, sw_basins_no_missing) %>%
   ))
 
 # saving: 
-# TODO: add to s3?
 # st_write(all_sw_intakes, "./data/clean/pwsid_swaterbodies.geojson")
+# writing to aws: 
+put_object(
+  file = "./data/clean/pwsid_swaterbodies.geojson",
+  object = "/state-drinking-water/TX/clean/pwsid_swaterbodies.geojson",
+  bucket = "tech-team-data"
+)
 
 # converting to points for plotting to see where there are still intakes 
 # missing water bodies: 
@@ -161,7 +208,7 @@ leaflet() %>%
               opacity = 9,
               color = ~wtrbdy_pal(basin_name_short),
               weight = 1,
-              label = paste0("basin: ", basins$basin_name_short)) %>%
+              label = paste0("basin: ", basins$basin_name_short, "; % impaired: ", round(basins$pct_impaired, 2))) %>%
   addLegend("bottomright",
             pal = wtrbdy_pal,
             values = basins$basin_name_short,
@@ -171,7 +218,7 @@ leaflet() %>%
               opacity = 9,
               color = ~wtrbdy_pal(basin_name_short),
               weight = 1,
-              label = paste0("res: ", res_basin$res_name, "; basin: ",
+              label = paste0("reservoir: ", res_basin$res_name, "; basin: ",
                              res_basin$basin_name_short)) %>%
   addCircleMarkers(data = sw_points_sf, 
                    fill = ~wtrbdy_pal(basin_name_short), 
@@ -199,15 +246,18 @@ minor_aquifers <- enviro_gw$minor_aquifers %>%
 major_aquifers <- enviro_gw$major_aquifers %>%
   st_transform(., crs = st_crs(basins))
 
-well_metadata <- enviro_gw$well_metadata %>%
-  filter(nchar(latitude_dd) > 0) %>%
-  st_as_sf(., coords = c("longitude_dd", "latitude_dd"), 
-           crs = st_crs(basins)) 
+# loading in well locations: 
+well_twdb <- enviro_gw$well_locations %>%
+  st_as_sf(.,crs = st_crs(basins)) %>%
+  filter(!(primary_wat %in% c("Unused", "Plugged or Destroyed"))) %>%
+  st_transform(., crs = st_crs(basins)) %>%
+  janitor::clean_names()
 
-# plotting to investigate overlap between all of these: 
+# plotting to investigate overlap between the minor and major aquifers: 
 aq_pal <- colorFactor(
   palette = viridis::plasma(22),
   domain = minor_aquifers$aqu_name)
+
 maj_aq_pal <- colorFactor(
   palette = viridis::mako(9),
   domain = major_aquifers$aq_name)
@@ -225,42 +275,131 @@ leaflet() %>%
               weight = 1,
               label = paste0("minor aq: ", minor_aquifers$aqu_name)) %>%
   addLegend("bottomright",
+            pal = aq_pal,
+            values = minor_aquifers$aqu_name,
+            title = "Minor Aquifers",
+            opacity = 1) %>%
+  addLegend("bottomright",
             pal = maj_aq_pal,
             values = major_aquifers$aq_name,
             title = "Major Aquifers",
-            opacity = 1) %>%
+            opacity = 1) 
+
+# tying well dataset and prepping for migration to QGIS for spatial functions: 
+well_locations_counties <- well_twdb 
+# st_write("./data/raw/well_locations_counties.geojson")
+well_locations_counties <- st_read("./data/raw/well_locations_counties.geojson") %>%
+  janitor::clean_names() %>%
+  # focusing on JUST wells where the primary use is public supply 
+  filter(primary_wat == "Public Supply")
+
+# NEXT STEPS DONE IN QGIS: (working on a macro to automate this)
+# - load in well_locations_counties that was saved above & filter data for 
+#   "PrimaryWat" LIKE 'Public Supply'
+# - load major & minor aquifer boundaries, which both have overlapping polygons
+#     - NOTE: make sure the CRS is the same (currently ESPG:4269) - you'll have to change
+#       it for minor aquifers. 
+#     - NOTE: for Blaine (minor aquifer), the boundaries are invalid. 
+#       When splitting, you'll have to go to advanced -> algorithm settings -> skip when invalid.
+# - use the "split vector layer" tool to split the major and minor aquifers by 
+#   aquifer name 
+# - run intersections of the well_locations_counties on EACH aquifer boundary 
+#   (both major and minor)
+# - select all minor aquifer points that were created after intersecting and merge 
+#   using the "merge vector layers" tool. Save it as a geojson.  
+# - select all major aquifer points that were created after intersecting and merge
+#   using the "merge vector layers" tool. Save it as a geojson.   
+# - continue with the code below, resolving file paths as needed: 
+
+wells_major <- st_read("./data/raw/QGIS_Export/all_major_aquifer_wells.geojson")%>%
+  janitor::clean_names() %>%
+  select(-c("path", "aquifer", "perimeter")) %>%
+  mutate(aquifer_type = "major") %>%
+  rename(aquifer_area = area, 
+         aquifer_name = aq_name) %>%
+  relocate(aquifer_area, .after = aquifer_name)
+
+wells_minor <- st_read("./data/raw/QGIS_Export/all_minor_aquifer_wells.geojson") %>%
+  janitor::clean_names() %>%
+  select(-c("path", "aquifer", "minor_area")) %>%
+  mutate(aquifer_type = "minor") %>%
+  rename(aquifer_area = area_aq, 
+         aquifer_name = aqu_name)
+
+# combining ALL intersected wells: 
+all_well_data <- rbind(wells_major, wells_minor)
+all_well_data <- all_well_data %>%
+  mutate(aquifer_type_code = paste0(aquifer_name, "-", aquifer_type))
+  
+# grabbing all intersecting aquifers for each unique well number: 
+grouped <- split(all_well_data$aquifer_type_code, all_well_data$state_well_n)
+unique_items <- lapply(grouped, unique)
+# what the maximum number of aquifers a well intersects with:(5?!)
+max(lengths(unique_items)) 
+# transforming to data frame
+well_aquifers <- plyr::ldply(unique_items, rbind)
+names(well_aquifers) <- c("state_well_n", "aquifer_one", "aquifer_two", 
+                          "aquifer_three", "aquifer_four", "aquifer_five")
+# there were 279 wells that didn't intersect with a known aquifer 
+well_final <- merge(well_locations_counties, well_aquifers, all.x = TRUE)
+# st_write(well_final, "./data/clean/well_county_aquifers.geojson")
+# writing to aws: 
+put_object(
+  file = "./data/clean/well_county_aquifers.geojson",
+  object = "/state-drinking-water/TX/clean/well_county_aquifers.geojson",
+  bucket = "tech-team-data"
+)
+
+# plotting wells points and aquifers together:  
+well_pal <- colorFactor(
+  palette = viridis::mako(20),
+  domain = well_final$aquifer_one)
+
+maj_aq_pal <- colorFactor(
+  palette = viridis::mako(9),
+  domain = major_aquifers$aq_name)
+
+leaflet() %>%
+  addProviderTiles(providers$CartoDB.VoyagerNoLabels, group = "Toner Lite") %>%
+  addPolygons(data = major_aquifers,
+              opacity = 9,
+              color = ~maj_aq_pal(aq_name),
+              weight = 1,
+              label = paste0("major aq: ", major_aquifers$aq_name)) %>%
+  addPolygons(data = minor_aquifers,
+              opacity = 9,
+              color = ~aq_pal(aqu_name),
+              weight = 1,
+              label = paste0("minor aq: ", minor_aquifers$aqu_name)) %>%
   addLegend("bottomright",
             pal = aq_pal,
             values = minor_aquifers$aqu_name,
             title = "Minor Aquifers",
-            opacity = 1)
+            opacity = 1) %>%
+  addLegend("bottomright",
+            pal = maj_aq_pal,
+            values = major_aquifers$aq_name,
+            title = "Major Aquifers",
+            opacity = 1) %>%
+  addCircleMarkers(data = well_final,
+                   opacity = 9,
+                   radius = 0.2, 
+                   color = ~well_pal(aquifer_one),
+                   weight = 1,
+                   label = paste0("well #:", 
+                                  well_final$state_well_n, 
+                                  "; county: ", 
+                                  well_final$county_name, 
+                                  "; aquifer one: ", 
+                                  well_final$aquifer_one, 
+                                  "; aquifer two: ", 
+                                  well_final$aquifer_two, 
+                                  "; aquifer three: ", 
+                                  well_final$aquifer_three, 
+                                  "; aquifer four: ", 
+                                  well_final$aquifer_four, 
+                                  "; aquifer five: ", 
+                                  well_final$aquifer_five)) 
 ```
 
-
-## East TX counties
-```{r}
-# reading counties in east TX from a webscrape: 
-east_tx <- read.csv("./data/raw/east_TX_counties.csv") %>%
-  select(-X)
-
-# grabbing census geographies: 
-east_tx_geom <- census_tidy %>%
-  filter(counties %in% paste0(east_tx$county_name, " County")) %>%
-  group_by(counties) %>%
-  summarize()
-
-# grabbing the larger geography of TX
-tx_geom <- census_tidy %>%
-  summarize()
-
-leaflet() %>%
-  addProviderTiles(providers$CartoDB.VoyagerNoLabels, group = "Toner Lite") %>%
-  addPolygons(data = tx_geom, 
-              color = "grey", 
-              weight = 1) %>%
-  addPolygons(data = east_tx_geom,
-              opacity = 9,
-              color = "#333c6bff",
-              weight = 1)
-```
 

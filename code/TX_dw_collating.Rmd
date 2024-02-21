@@ -94,6 +94,16 @@ sw_intake_tidy <- fromJSON(rawToChar(sw_intake$content))$features$attribute %>%
   rename(pwsid = pws_id) %>%
   mutate(pwsid = paste0("TX", pwsid))
 
+## Well locations: https://www.twdb.texas.gov/mapping/gisdata/doc/well/TWDB_Groundwater.zip
+# Pulled Feb 19 2024
+file_loc <- "./data/raw/well_locations"
+download.file("https://www.twdb.texas.gov/mapping/gisdata/doc/well/TWDB_Groundwater.zip", 
+              destfile = paste0(file_loc, ".zip"))
+unzip(zipfile = paste0(file_loc, ".zip"), exdir = file_loc) 
+file.remove(paste0(file_loc, ".zip"))
+well_locations <- st_read(paste0(file_loc, "/TWDB_Groundwater.shp")) %>%
+  janitor::clean_names()
+
 ## groundwater quality & levels: 
 # function for reading gwdb tables, which have unique separators: 
 read_gwdb_table <- function(x) {
@@ -230,13 +240,15 @@ TX_enviro_ground <- list()
 TX_enviro_ground[[1]] <- minor_aquifers
 TX_enviro_ground[[2]] <- maj_aquifers
 TX_enviro_ground[[3]] <- well_main
-TX_enviro_ground[[4]] <- recent_well_levels
-TX_enviro_ground[[5]] <- well_wl
-TX_enviro_ground[[6]] <- well_wq
+TX_enviro_ground[[4]] <- well_locations
+TX_enviro_ground[[5]] <- recent_well_levels
+TX_enviro_ground[[6]] <- well_wl
+TX_enviro_ground[[7]] <- well_wq
 names(TX_enviro_ground) <- c("minor_aquifers", "major_aquifers",
-                              "well_metadata",
-                              "well_levels_recent", "well_levels_historic", 
-                              "well_quality_historic")
+                             "well_metadata",
+                             "well_locations", 
+                             "well_levels_recent", "well_levels_historic", 
+                             "well_quality_historic")
 saveRDS(TX_enviro_ground, file="./data/raw/TX_enviro_ground_list.RData")
 put_object(
   file = "./data/raw/TX_enviro_ground_list.RData",
