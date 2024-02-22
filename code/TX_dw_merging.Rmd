@@ -180,8 +180,32 @@ all_sw_intakes <- rbind(all_intersected, sw_basins_no_missing) %>%
     TRUE ~ alt_res_name
   ))
 
+# locating intakes that didn't match to a waterbody and adding basin: 
+no_basins <- all_sw_intakes %>%
+  filter(is.na(basin_name_short)) %>%
+  st_as_sf(., coords = c("long_dd", "lat_dd"), 
+           crs = st_crs(res_basin)) %>%
+  select(-c(basin_num:status)) %>%
+  mutate(alt_res_name = paste0(alt_res_name, "- no matching waterbody"))
+# matching intakes that didn't match with a water body to a basin: 
+no_basins_filled <- st_intersection(no_basins, basins) 
+
+# recombining with overall data frame: 
+no_basins_filled_df <- no_basins_filled %>%
+  as.data.frame() %>%
+  select(res_name, pwsid, wtrsrc, alt_res_name:pct_impaired)
+
+all_sw_intakes_filled <- all_sw_intakes %>%
+  filter(is.na(basin_name_short)) %>%
+  select(!(basin_num:pct_impaired)) %>%
+  select(!c("alt_res_name")) %>%
+  left_join(no_basins_filled_df, by = c("res_name", "pwsid", "wtrsrc"))
+
+all_sw_intakes_final <- rbind(all_sw_intakes_filled, all_sw_intakes %>%
+                               filter(!is.na(basin_name_short)))
+
 # saving: 
-# st_write(all_sw_intakes, "./data/clean/pwsid_swaterbodies.geojson")
+st_write(all_sw_intakes_final, "./data/clean/pwsid_swaterbodies.geojson")
 # writing to aws: 
 put_object(
   file = "./data/clean/pwsid_swaterbodies.geojson",
@@ -193,7 +217,7 @@ all_sw_intakes <- st_read("./data/clean/pwsid_swaterbodies.geojson")
 
 # converting to points for plotting to see where there are still intakes 
 # missing water bodies: 
-sw_points_sf <- all_sw_intakes %>%
+sw_points_sf <- all_sw_intakes_final %>%
   as.data.frame() %>%
   select(-geometry) %>%
   filter(!(is.na(lat_dd))) %>%
@@ -355,13 +379,14 @@ names(well_aquifers) <- c("state_well_n", "aquifer_one", "aquifer_two",
 # there were 279 wells that didn't intersect with a known aquifer 
 well_final <- merge(well_locations_counties, well_aquifers, all.x = TRUE) 
 
-# st_write(well_final, "./data/clean/well_county_aquifers.geojson")
+st_write(well_final, "./data/clean/well_county_aquifers.geojson")
 # writing to aws: 
 put_object(
   file = "./data/clean/well_county_aquifers.geojson",
   object = "/state-drinking-water/TX/clean/well_county_aquifers.geojson",
   bucket = "tech-team-data"
 )
+well_final <- st_read("./data/clean/well_county_aquifers.geojson")
 
 # plotting wells points and aquifers together:  
 well_pal <- colorFactor(
@@ -429,19 +454,21 @@ head(wds)
 ## Merging keys: 
 ```{r}
 # pwsid, waterbody name, and basin name: 
-pwsid_sw_merge <- all_sw_intakes %>%
+pwsid_sw_merge <- all_sw_intakes_final %>%
   as.data.frame() %>%
-  select(pwsid, sys_name, basin_name_short, res_name) %>%
-  unique()
+  select(pwsid, sys_name, basin_name_short, res_name, alt_res_name) %>%
+  unique() %>%
+  # filtering NAs, from when a waterbody exists but does not supply water 
+  # to a public water system: 
+  filter(!is.na(pwsid))
 # 350 pwsids
 
 # well number, county, and aquifers: 
 well_gw_merge <- well_final %>%
   as.data.frame() %>%
-  select("state_well_n", "county_name", aquifer_one:aquifer_five) %>%
+  select(state_well_n, county_name, aquifer_one:aquifer_five) %>%
   unique()
 # 12996 wells
-
 ```
 
 
