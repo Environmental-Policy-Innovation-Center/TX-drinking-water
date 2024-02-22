@@ -243,6 +243,11 @@ leaflet() %>%
 minor_aquifers <- enviro_gw$minor_aquifers %>%
   st_transform(., crs = st_crs(basins))
 
+# toubleshooting blaine with invalid boundaries: 
+# blaine <- minor_aquifers %>%
+#   filter(aqu_name == "BLAINE")
+# st_write(blaine, "./data/raw/blaine.geojson")
+
 major_aquifers <- enviro_gw$major_aquifers %>%
   st_transform(., crs = st_crs(basins))
 
@@ -297,14 +302,17 @@ well_locations_counties <- st_read("./data/raw/well_locations_counties.geojson")
 # - load in well_locations_counties that was saved above & filter data for 
 #   "PrimaryWat" LIKE 'Public Supply'
 # - load major & minor aquifer boundaries, which both have overlapping polygons
-#     - NOTE: make sure the CRS is the same (currently ESPG:4269) - you'll have to change
-#       it for minor aquifers. 
+#     - NOTE: make sure the CRS is the same (currently using ESPG:4326) - you'll 
+#       have to change it for minor aquifers. 
 #     - NOTE: for Blaine (minor aquifer), the boundaries are invalid. 
 #       When splitting, you'll have to go to advanced -> algorithm settings -> skip when invalid.
 # - use the "split vector layer" tool to split the major and minor aquifers by 
 #   aquifer name 
 # - run intersections of the well_locations_counties on EACH aquifer boundary 
 #   (both major and minor)
+# - to troubleshoot issues with the Blair aquifer, go to the minor aquifer 
+#   attribute table, select the "BLAIR" aqu_name entries, extract the selected 
+#   feature layers, and run the intersection like you would normally. 
 # - select all minor aquifer points that were created after intersecting and merge 
 #   using the "merge vector layers" tool. Save it as a geojson.  
 # - select all major aquifer points that were created after intersecting and merge
@@ -317,14 +325,16 @@ wells_major <- st_read("./data/raw/QGIS_Export/all_major_aquifer_wells.geojson")
   mutate(aquifer_type = "major") %>%
   rename(aquifer_area = area, 
          aquifer_name = aq_name) %>%
-  relocate(aquifer_area, .after = aquifer_name)
+  relocate(aquifer_area, .after = aquifer_name) %>%
+  st_transform(., crs = st_crs(basins))
 
 wells_minor <- st_read("./data/raw/QGIS_Export/all_minor_aquifer_wells.geojson") %>%
   janitor::clean_names() %>%
   select(-c("path", "aquifer", "minor_area")) %>%
   mutate(aquifer_type = "minor") %>%
   rename(aquifer_area = area_aq, 
-         aquifer_name = aqu_name)
+         aquifer_name = aqu_name) %>%
+  st_transform(., crs = st_crs(basins))
 
 # combining ALL intersected wells: 
 all_well_data <- rbind(wells_major, wells_minor)
@@ -341,7 +351,8 @@ well_aquifers <- plyr::ldply(unique_items, rbind)
 names(well_aquifers) <- c("state_well_n", "aquifer_one", "aquifer_two", 
                           "aquifer_three", "aquifer_four", "aquifer_five")
 # there were 279 wells that didn't intersect with a known aquifer 
-well_final <- merge(well_locations_counties, well_aquifers, all.x = TRUE)
+well_final <- merge(well_locations_counties, well_aquifers, all.x = TRUE) 
+
 # st_write(well_final, "./data/clean/well_county_aquifers.geojson")
 # writing to aws: 
 put_object(
@@ -383,23 +394,23 @@ leaflet() %>%
             opacity = 1) %>%
   addCircleMarkers(data = well_final,
                    opacity = 9,
-                   radius = 0.2, 
+                   radius = 0.2,
                    color = ~well_pal(aquifer_one),
                    weight = 1,
-                   label = paste0("well #:", 
-                                  well_final$state_well_n, 
-                                  "; county: ", 
-                                  well_final$county_name, 
-                                  "; aquifer one: ", 
-                                  well_final$aquifer_one, 
-                                  "; aquifer two: ", 
-                                  well_final$aquifer_two, 
-                                  "; aquifer three: ", 
-                                  well_final$aquifer_three, 
-                                  "; aquifer four: ", 
-                                  well_final$aquifer_four, 
-                                  "; aquifer five: ", 
-                                  well_final$aquifer_five)) 
+                   label = paste0("well #:",
+                                  well_final$state_well_n,
+                                  "; county: ",
+                                  well_final$county_name,
+                                  "; aquifer one: ",
+                                  well_final$aquifer_one,
+                                  "; aquifer two: ",
+                                  well_final$aquifer_two,
+                                  "; aquifer three: ",
+                                  well_final$aquifer_three,
+                                  "; aquifer four: ",
+                                  well_final$aquifer_four,
+                                  "; aquifer five: ",
+                                  well_final$aquifer_five))
 ```
 
 
