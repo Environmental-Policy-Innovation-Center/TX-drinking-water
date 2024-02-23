@@ -1,0 +1,91 @@
+---
+title: "TX Drinking Water Data Analysis - Hydrology"
+author: "EmmaLi Tsai"
+date: "2024-02-23"
+output: html_document
+---
+## Loading packages 
+```{r}
+library(tidyverse)
+library(leaflet)
+library(sf)
+library(aws.s3)
+```
+
+## Loading data lists 
+```{r}
+# reading demographic, environmental (gw and sw), water delivery system (wds)
+# and financial lists generated in TX_dw_collating: 
+demo <- aws.s3::s3read_using(readRDS, 
+                            object = "s3://tech-team-data/state-drinking-water/TX/clean/TX_demographic_list.RData")
+enviro_sw <- aws.s3::s3read_using(readRDS, 
+                            object = "s3://tech-team-data/state-drinking-water/TX/clean/TX_enviro_surface_list.RData")
+enviro_gw <- aws.s3::s3read_using(readRDS, 
+                            object = "s3://tech-team-data/state-drinking-water/TX/clean/TX_enviro_ground_list.RData")
+wds <- aws.s3::s3read_using(readRDS, 
+                            object = "s3://tech-team-data/state-drinking-water/TX/clean/TX_water_delivery_list.RData")
+fin <- aws.s3::s3read_using(readRDS, 
+                            object = "s3://tech-team-data/state-drinking-water/TX/clean/TX_financial_list.RData")
+
+keys <- aws.s3::s3read_using(readRDS, 
+                            object = "s3://tech-team-data/state-drinking-water/TX/clean/TX_merging_keys_list.RData")
+```
+
+## Does the system have adequate water supply?
+
+
+## Has the system reported any water quality violations?
+```{r}
+# grabbing sdiws violations, pwsids, and year
+sdwis <- wds$sdwis
+pwsids <- unique(demo$census$pwsid)
+year <- year(Sys.Date())
+
+# calculating number of violations over the past 5 years: 
+viol_5yr <- sdwis %>% 
+  filter(pwsid %in% pwsids) %>%
+  filter(viol_year >= (year - 5)) %>%
+  group_by(pwsid, is_health_based_ind) %>%
+  summarize(total_viol = length(unique(violation_id))) %>%
+  pivot_wider(names_from = is_health_based_ind, values_from = total_viol) %>%
+  rename(paperwork_violations_5yr = N, 
+         healthbased_violations_5yr = Y) %>%
+  mutate_at(c("paperwork_violations_5yr", "healthbased_violations_5yr"), 
+            ~replace_na(.,0)) %>%
+  mutate(total_violations_5yr = sum(paperwork_violations_5yr + healthbased_violations_5yr))
+
+# calculating number of violations over the past 10 years: 
+viol_10yr <- sdwis %>% 
+  filter(pwsid %in% pwsids) %>%
+  filter(viol_year >= (year - 10)) %>%
+  group_by(pwsid, is_health_based_ind) %>%
+  summarize(total_viol = length(unique(violation_id))) %>%
+  pivot_wider(names_from = is_health_based_ind, values_from = total_viol) %>%
+  rename(paperwork_violations_10yr = N, 
+         healthbased_violations_10yr = Y) %>%
+  mutate_at(c("paperwork_violations_10yr", "healthbased_violations_10yr"), 
+            ~replace_na(.,0)) %>%
+  mutate(total_violations_10yr = sum(paperwork_violations_10yr + healthbased_violations_10yr))
+
+# combining into one data frame: 
+violation_summary <-merge(viol_10yr, viol_5yr, by = "pwsid", all.x = TRUE) %>%
+  # mutating since some pwsids might not have had violations over the past 
+  # 5 years
+  mutate_at(c("paperwork_violations_5yr", "healthbased_violations_5yr", 
+              "total_violations_5yr"), 
+            ~replace_na(.,0)) 
+```
+
+## How many boil water notices have there been over the past five years?
+
+## Have there been any enforcement actions?
+
+## What is the Climate Vulerability Index?
+
+## Does the system use green energy/focus on green energy?
+
+## How much water loss does the system have?
+
+## What type of treatment is in use? 
+
+## What is the source of water? 
