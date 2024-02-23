@@ -5,12 +5,16 @@ date: "2024-02-15"
 output: html_document
 ---
 
-## Loading packages: 
+## Loading packages & functions
 ```{r}
+# packages: 
 library(tidyverse)
 library(leaflet)
 library(sf)
 library(aws.s3)
+
+# helper function for intersecting aquifers: 
+source("./code/functions/intersect_aquifers.R")
 ```
 
 ## Loading lists of data:  
@@ -28,7 +32,8 @@ wds <- aws.s3::s3read_using(readRDS,
 fin <- aws.s3::s3read_using(readRDS, 
                             object = "s3://tech-team-data/state-drinking-water/TX/clean/TX_financial_list.RData")
 
-# Also grabbing census geographies for data merging: 
+# Grabbing census geographies for data merging: 
+# NOTE: data are st_crs == NAD83
 census_vars <- c(total_pop = "B01003_001")
 census <- tidycensus::get_acs(
   geography = "tract", 
@@ -38,7 +43,7 @@ census <- tidycensus::get_acs(
   geometry = TRUE
 )
 
-# adding counties: 
+# Adding counties: 
 census_tidy <- census
 counties <- unlist(strsplit(census_tidy$NAME, split = ","))
 census_tidy$counties <- trimws(counties[grepl("County", counties)])
@@ -78,22 +83,23 @@ basins <- enviro_sw$major_river_basins %>%
   left_join(., enviro_sw$impaired_basins, by = "basin_num") %>%
   rename(basin_name_short = basin_name.x, 
          basin_name_long = basin_name.y) %>%
-  select(!c("id", "label_no"))
+  select(!c("id", "label_no")) %>%
+  st_transform(., crs = st_crs(census)) 
 
-# st_intersection with reservoir boundaries to identify which reservoirs 
-# are in what basin: 
+# for each reservoir, identify which basin it falls in: 
 res <- enviro_sw$reservoirs %>%
   # dropping z coordinates: 
   st_zm(., drop = TRUE) %>%
-  st_as_sf(.) %>%
-  st_transform(., crs = st_crs(basins)) 
+  # st_as_sf(.) %>%
+  st_transform(., crs = st_crs(census)) 
 # switch off spherical geometry 
 sf_use_s2(FALSE)
 res_basin <- st_intersection(res, basins)
 
-# st_intersection with rivers to identify which basin they fall under: 
+# for each river, identify which basin it falls in: 
 rivers <- enviro_sw$rivers %>%
   mutate(name = toupper(name)) %>%
+  st_transform(., crs = st_crs(census)) %>%
   rename(river_name = name)
 riv_basin <- st_intersection(rivers, basins) %>%
   select(river_name:geometry) %>%
@@ -104,25 +110,50 @@ riv_basin <- st_intersection(rivers, basins) %>%
   unique()
 
 # combining rivers and reservoirs: 
-riv_res_basin <- rbind(riv_basin, res_basin)
+riv_res_basin <- rbind(riv_basin, res_basin) 
 
-# matching reservoir, basins, and river with surface water intakes: 
+# matching reservoir, basins, and rivers with surface water intakes: 
 sw <- enviro_sw$surface_water_intakes %>%
-  select(-objectid) %>%
-  rename()
+  select(-objectid) 
+# rectifying differences in horizontal datum - some are in NAD83 and others
+# are NAD27: 
+nad_27 <- sw %>%
+  filter(horz_datum == "NAD27") %>%
+  st_as_sf(., coords = c("long_dd", "lat_dd"), 
+           crs = st_crs(census)) 
+nad_83 <- sw %>%
+  filter(horz_datum != "NAD27") %>%
+  st_as_sf(., coords = c("long_dd", "lat_dd"), 
+           crs = st_crs(census))
+# adding these back together 
+sw_corrected <- rbind(nad_27, nad_83) %>%
+  select(-horz_datum) %>%
+  mutate(lon = sf::st_coordinates(.)[,1],
+         lat = sf::st_coordinates(.)[,2]) %>%
+  as.data.frame() %>%
+  select(-geometry)
 
-sw_basins <- merge(riv_res_basin, sw, by.x = "res_name", by.y = "waterbody",
-                   all = TRUE) %>%
-  # removing reservoirs that are not a water supply 
-  filter(type == "Water Supply" | is.na(type) | type == "River")
+# matching reservoir, basins, and river with surface water intakes using 
+ # a name match: 
+riv_res_basin_df <- as.data.frame(riv_res_basin) %>%
+  select(-geometry) %>%
+  unique()
+sw_basins <- merge(riv_res_basin_df, sw_corrected,
+                   by.x = "res_name", by.y = "waterbody",
+                   all.y = TRUE) %>%
+  # removing reservoirs that are not a water supply
+  filter(type == "Water Supply" | is.na(type) | type == "River") %>%
+  unique()
 
 # converting sw points to sf object: 
 points_sf <- sw_basins %>%
   as.data.frame() %>%
-  select(-geometry) %>%
-  filter(!(is.na(lat_dd)))  %>%
-  st_as_sf(., coords = c("long_dd", "lat_dd"), 
-           crs = st_crs(res_basin)) 
+  filter(!(is.na(lat))) %>%
+  st_as_sf(., coords = c("lon", "lat"),
+           crs = st_crs(census)) %>%
+  # retain coordinates:
+  mutate(lon = sf::st_coordinates(.)[,1],
+         lat = sf::st_coordinates(.)[,2])
 
 # grabbing entries that are missing from the original merge and will require 
 # matching using st_intersection:
@@ -131,82 +162,89 @@ no_match <- sw_basins %>%
 
 # intersection with a 0.01dd buffer to find nearby water bodies that likely 
 # match to the sw intake: 
+# turning spherical geometry back on:
+sf_use_s2(TRUE) 
 missing_sw <- points_sf %>%
   filter(res_name %in% no_match$res_name) %>%
   st_buffer(., dist = 0.01)
 
-sw_resbasin <- st_intersection(missing_sw, riv_res_basin) 
-sw_resbasin_tidy <- sw_resbasin %>%
-  select(c("res_name", pwsid:geometry)) 
+sw_resbasin <- st_intersection(missing_sw, riv_res_basin) %>%
+  select(-c(basin_num:status))
+# resolved 49 sw intakes 
 
-# join back to sw_basins - creating a new column to keep track of those 
-# that were merged via intersection: 
-sw_basins$alt_res_name <- "NA"
+# adding in basin information for those that don't match with any water body: 
+no_waterbody <- missing_sw %>%
+  filter(!(paste0(res_name, pwsid, sys_name)) %in% 
+           paste0(sw_resbasin$res_name, sw_resbasin$pwsid, 
+                  sw_resbasin$sys_name))
+no_waterbody_basin <- st_intersection(no_waterbody, basins) %>%
+  select(-c(basin_num:status))
 
-sw_resbasin_tidy <- sw_resbasin_tidy %>%
-  relocate(basin_num.1:status.1) %>%
-  relocate(res_name) %>%
-  relocate(res_name.1, .after = geometry)
+# why are we missing two? 
+# One of them is MILLWOOD LAKE which is outside of TX
+# and another is IBWC FALCON VILLAGE in the Falcon Reservoir - will need to be fixed by hand at the end. 
+falcon <- no_waterbody_basin %>%
+  filter(res_name == "FALCON RESERVOIR")
 
-# adding lat/long coords back and aligning columns & names: 
-sw_resbasin_tidy <- sw_basins %>% 
-  select(c("pwsid", "wtrsrc", "lat_dd", "long_dd")) %>%
+missing_falcon <- no_waterbody %>%
+  filter(sys_name == "IBWC FALCON VILLAGE") %>%
+  mutate(basin_num.1 = falcon$basin_num, 
+         basin_name_short.1 = falcon$basin_name_short, 
+         basin_name_long.1 = falcon$basin_name_long, 
+         length_impaired.1 = falcon$length_impaired, 
+         length_total.1 = falcon$length_total, 
+         pct_impaired.1 = falcon$pct_impaired)
+
+missing_falcon <- missing_falcon[,names(no_waterbody_basin)]
+filled_intake_data <- rbind(no_waterbody_basin, missing_falcon)
+filled_intake_data$res_name.1 <- "no matching wtrbdy"
+filled_intake_data$status.1 <- "no matching wtrbdy"
+filled_intake_data$type.1 <- "no matching wtrbdy"
+
+# combining back with missing surface water from intersections: 
+filled_intake_data <- filled_intake_data[, names(sw_resbasin)]
+all_filled_intakes <- rbind(sw_resbasin, filled_intake_data) %>%
   as.data.frame() %>%
-  right_join(., sw_resbasin_tidy, by = c("pwsid", "wtrsrc")) %>%
-  select(-geometry.x) %>%
-  relocate(pwsid, .after = status.1) %>%
-  relocate(wtrsrc, .after = sys_name) %>%
-  relocate(c("lat_dd", "long_dd"), .after = opstat) %>%
-  unique()
+  select(-geometry)
 
-names(sw_resbasin_tidy) <- names(sw_basins)
-
-# grabbing completely non-matching surface water intakes to rbind to 
-# ones that were intersected
-comp_missing <- no_match %>%
-  filter(!(res_name %in% sw_resbasin_tidy$res_name)) %>%
+# splitting and recombining back into the larger dataset:  
+match <- sw_basins %>%
+  filter(!is.na(type)) %>%
   mutate(alt_res_name = "NA")
 
-all_intersected <- rbind(sw_resbasin_tidy, comp_missing)
+all_filled_intakes <- all_filled_intakes %>%
+  rename(alt_res_name = res_name.1)
+names(all_filled_intakes) <- gsub(".[[:digit:]]", "", names(all_filled_intakes)) 
 
-# filtering sw_basins to remove the entries that were matched via intersection:  
-sw_basins_no_missing <- sw_basins %>%
-  filter(!is.na(type))
+all_sw_intakes <- match[,names(all_filled_intakes)] 
+all_sw_intakes <- rbind(all_filled_intakes, all_sw_intakes) 
 
-# replacing intersected matches: 
-all_sw_intakes <- rbind(all_intersected, sw_basins_no_missing) %>%
-  mutate(alt_res_name = case_when(
-    alt_res_name == "NA" ~ res_name, 
-    TRUE ~ alt_res_name
-  ))
-
-# locating intakes that didn't match to a waterbody and adding basin: 
-no_basins <- all_sw_intakes %>%
-  filter(is.na(basin_name_short)) %>%
-  st_as_sf(., coords = c("long_dd", "lat_dd"), 
-           crs = st_crs(res_basin)) %>%
+# doing a last st_intersect to match sw intakes to the 
+# correct basin, as some rivers span multiple: 
+all_sw <- all_sw_intakes %>%
   select(-c(basin_num:status)) %>%
-  mutate(alt_res_name = paste0(alt_res_name, "- no matching waterbody"))
-# matching intakes that didn't match with a water body to a basin: 
-no_basins_filled <- st_intersection(no_basins, basins) 
+  st_as_sf(., coords = c("lon", "lat"), 
+           crs = st_crs(census)) %>%
+  filter(sys_name != "IBWC FALCON VILLAGE")
+all_intakes_basin_fixed <- st_intersection(all_sw, basins)
+# adding falcon back, since it doesn't automatically match to 
+# Rio Grande: 
+falcon <- all_sw_intakes %>%
+  filter(sys_name == "IBWC FALCON VILLAGE") %>%
+  st_as_sf(., coords = c("lon", "lat"), 
+           crs = st_crs(census)) %>%
+  mutate(lon = sf::st_coordinates(.)[,1],
+         lat = sf::st_coordinates(.)[,2])
+falcon <- falcon[, names(all_intakes_basin_fixed)]
+all_intakes_basin_fixed <- rbind(all_intakes_basin_fixed, falcon)
 
-# recombining with overall data frame: 
-no_basins_filled_df <- no_basins_filled %>%
-  as.data.frame() %>%
-  select(res_name, pwsid, wtrsrc, alt_res_name:pct_impaired)
-
-all_sw_intakes_filled <- all_sw_intakes %>%
-  filter(is.na(basin_name_short)) %>%
-  select(!(basin_num:pct_impaired)) %>%
-  select(!c("alt_res_name")) %>%
-  left_join(no_basins_filled_df, by = c("res_name", "pwsid", "wtrsrc"))
-
-all_sw_intakes_final <- rbind(all_sw_intakes_filled, all_sw_intakes %>%
-                               filter(!is.na(basin_name_short)))
+# final tidying of dataset: 
+all_sw_intakes_final <- all_intakes_basin_fixed %>%
+  unique() 
 
 # saving: 
 st_write(all_sw_intakes_final, "./data/clean/pwsid_swaterbodies.geojson")
-# writing to aws: 
+# writing to aws:
 put_object(
   file = "./data/clean/pwsid_swaterbodies.geojson",
   object = "/state-drinking-water/TX/clean/pwsid_swaterbodies.geojson",
@@ -215,18 +253,10 @@ put_object(
 
 all_sw_intakes <- st_read("./data/clean/pwsid_swaterbodies.geojson")
 
-# converting to points for plotting to see where there are still intakes 
-# missing water bodies: 
-sw_points_sf <- all_sw_intakes_final %>%
-  as.data.frame() %>%
-  select(-geometry) %>%
-  filter(!(is.na(lat_dd))) %>%
-  st_as_sf(., coords = c("long_dd", "lat_dd"), 
-           crs = st_crs(res_basin)) 
-
+# plotting: 
 wtrbdy_pal <- colorFactor(
   palette = viridis::plasma(23),
-  domain = basins$baisn_name_short)
+  domain = basins$basin_name_short)
 
 leaflet() %>%
   addProviderTiles(providers$CartoDB.VoyagerNoLabels, group = "Toner Lite") %>%
@@ -246,16 +276,16 @@ leaflet() %>%
               weight = 1,
               label = paste0("reservoir: ", res_basin$res_name, "; basin: ",
                              res_basin$basin_name_short)) %>%
-  addCircleMarkers(data = sw_points_sf, 
+  addCircleMarkers(data = all_sw_intakes_final, 
                    fill = ~wtrbdy_pal(basin_name_short), 
                    color = ~wtrbdy_pal(basin_name_short), 
                    weight = 3, 
                    opacity = 9, 
                    radius = 3, 
-                   label = paste0("pwsid: ", sw_points_sf$pwsid, "; waterbody: ", 
-                                  sw_points_sf$res_name, 
+                   label = paste0("pwsid: ", all_sw_intakes_final$pwsid, "; waterbody: ", 
+                                  all_sw_intakes_final$res_name, 
                                   "; basin name: ", 
-                                  sw_points_sf$basin_name_short)) %>%
+                                  all_sw_intakes_final$basin_name_short)) %>%
   addPolylines(data = riv_basin,
                opacity = 9,
                color = ~wtrbdy_pal(basin_name_short),
@@ -267,21 +297,16 @@ leaflet() %>%
 ```{r}
 # loading in minor and major aquifer boundaries: 
 minor_aquifers <- enviro_gw$minor_aquifers %>%
-  st_transform(., crs = st_crs(basins))
-
-# toubleshooting blaine with invalid boundaries: 
-# blaine <- minor_aquifers %>%
-#   filter(aqu_name == "BLAINE")
-# st_write(blaine, "./data/raw/blaine.geojson")
+  st_transform(., crs = st_crs(census))
 
 major_aquifers <- enviro_gw$major_aquifers %>%
-  st_transform(., crs = st_crs(basins))
+  st_transform(., crs = st_crs(census))
 
-# loading in well locations: 
+# loading in well locations and ONLY looking at wells where the water primarily 
+# goes to a public supply: 
 well_twdb <- enviro_gw$well_locations %>%
-  st_as_sf(.,crs = st_crs(basins)) %>%
-  filter(!(primary_wat %in% c("Unused", "Plugged or Destroyed"))) %>%
-  st_transform(., crs = st_crs(basins)) %>%
+  filter(primary_wat == "Public Supply") %>%
+  st_transform(., crs = st_crs(census)) %>%
   janitor::clean_names()
 
 # plotting to investigate overlap between the minor and major aquifers: 
@@ -316,71 +341,58 @@ leaflet() %>%
             title = "Major Aquifers",
             opacity = 1) 
 
-# tying well dataset and prepping for migration to QGIS for spatial functions: 
-well_locations_counties <- well_twdb 
-# st_write("./data/raw/well_locations_counties.geojson")
-well_locations_counties <- st_read("./data/raw/well_locations_counties.geojson") %>%
-  janitor::clean_names() %>%
-  # focusing on JUST wells where the primary use is public supply 
-  filter(primary_wat == "Public Supply")
 
-# NEXT STEPS DONE IN QGIS: (working on a macro to automate this)
-# - load in well_locations_counties that was saved above & filter data for 
-#   "PrimaryWat" LIKE 'Public Supply'
-# - load major & minor aquifer boundaries, which both have overlapping polygons
-#     - NOTE: make sure the CRS is the same (currently using ESPG:4326) - you'll 
-#       have to change it for minor aquifers. 
-#     - NOTE: for Blaine (minor aquifer), the boundaries are invalid. 
-#       When splitting, you'll have to go to advanced -> algorithm settings -> skip when invalid.
-# - use the "split vector layer" tool to split the major and minor aquifers by 
-#   aquifer name 
-# - run intersections of the well_locations_counties on EACH aquifer boundary 
-#   (both major and minor)
-# - to troubleshoot issues with the Blair aquifer, go to the minor aquifer 
-#   attribute table, select the "BLAIR" aqu_name entries, extract the selected 
-#   feature layers, and run the intersection like you would normally. 
-# - select all minor aquifer points that were created after intersecting and merge 
-#   using the "merge vector layers" tool. Save it as a geojson.  
-# - select all major aquifer points that were created after intersecting and merge
-#   using the "merge vector layers" tool. Save it as a geojson.   
-# - continue with the code below, resolving file paths as needed: 
+# running intersections of wells to aquifer boundaries: 
+well_major_aquifers <- intersect_aquifers(wells = well_twdb, 
+                                          aquifers = major_aquifers, 
+                                          aquifer_name_col = "aq_name")
 
-wells_major <- st_read("./data/raw/QGIS_Export/all_major_aquifer_wells.geojson")%>%
-  janitor::clean_names() %>%
-  select(-c("path", "aquifer", "perimeter")) %>%
+well_minor_aquifers <- intersect_aquifers(wells = well_twdb, 
+                                          aquifers = minor_aquifers, 
+                                          aquifer_name_col = "aqu_name")
+
+# combining intersected points into a single data frame
+wells_major <- well_major_aquifers %>%
+  select(-c("aquifer", "perimeter")) %>%
   mutate(aquifer_type = "major") %>%
   rename(aquifer_area = area, 
          aquifer_name = aq_name) %>%
   relocate(aquifer_area, .after = aquifer_name) %>%
-  st_transform(., crs = st_crs(basins))
+  st_transform(., crs = st_crs(census))
 
-wells_minor <- st_read("./data/raw/QGIS_Export/all_minor_aquifer_wells.geojson") %>%
-  janitor::clean_names() %>%
-  select(-c("path", "aquifer", "minor_area")) %>%
+wells_minor <- well_minor_aquifers %>%
+  select(-c("aquifer", "minor_area")) %>%
   mutate(aquifer_type = "minor") %>%
   rename(aquifer_area = area_aq, 
          aquifer_name = aqu_name) %>%
-  st_transform(., crs = st_crs(basins))
+  st_transform(., crs = st_crs(census))
 
-# combining ALL intersected wells: 
-all_well_data <- rbind(wells_major, wells_minor)
-all_well_data <- all_well_data %>%
+# adding an aquifer code to reorg the data frame to wide format with each 
+# row being a single well number: 
+all_well_data <- rbind(wells_major, wells_minor) %>%
   mutate(aquifer_type_code = paste0(aquifer_name, "-", aquifer_type))
-  
-# grabbing all intersecting aquifers for each unique well number: 
-grouped <- split(all_well_data$aquifer_type_code, all_well_data$state_well_n)
-unique_items <- lapply(grouped, unique)
-# what the maximum number of aquifers a well intersects with:(5?!)
-max(lengths(unique_items)) 
+
+# splitting data by  unique well number: 
+grouped_wells_aquifer <- split(all_well_data$aquifer_type_code,
+                               all_well_data$state_well_n)
+unique_wells <- lapply(grouped_wells_aquifer, unique)
+# what the maximum number of aquifers a well intersects with (5?!)
+max(lengths(unique_wells)) 
+
 # transforming to data frame
-well_aquifers <- plyr::ldply(unique_items, rbind)
+well_aquifers <- plyr::ldply(unique_wells, rbind)
 names(well_aquifers) <- c("state_well_n", "aquifer_one", "aquifer_two", 
                           "aquifer_three", "aquifer_four", "aquifer_five")
-# there were 279 wells that didn't intersect with a known aquifer 
-well_final <- merge(well_locations_counties, well_aquifers, all.x = TRUE) 
 
+# merging back in with well data: 
+well_final <- merge(well_twdb, 
+                    well_aquifers, all.x = TRUE) 
+# how many didn't intersect with any aquifer boundary?
+sum(is.na(well_final$aquifer_one)) # 261 
+
+# writing: 
 st_write(well_final, "./data/clean/well_county_aquifers.geojson")
-# writing to aws: 
+# writing to aws:
 put_object(
   file = "./data/clean/well_county_aquifers.geojson",
   object = "/state-drinking-water/TX/clean/well_county_aquifers.geojson",
@@ -468,7 +480,7 @@ well_gw_merge <- well_final %>%
   as.data.frame() %>%
   select(state_well_n, county_name, aquifer_one:aquifer_five) %>%
   unique()
-# 12996 wells
+# 12997 wells
 ```
 
 
