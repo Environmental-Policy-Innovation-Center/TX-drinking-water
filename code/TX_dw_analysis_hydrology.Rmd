@@ -29,6 +29,9 @@ fin <- aws.s3::s3read_using(readRDS,
 
 keys <- aws.s3::s3read_using(readRDS, 
                             object = "s3://tech-team-data/state-drinking-water/TX/clean/TX_merging_keys_list.RData")
+
+crosswalk <- aws.s3::s3read_using(read.csv, 
+                                  object = "s3://tech-team-data/pws_crosswalk/pws_census_tract_weighted_crosswalk.csv")
 ```
 
 ## Does the system have adequate water supply?
@@ -74,13 +77,93 @@ violation_summary <-merge(viol_10yr, viol_5yr, by = "pwsid", all.x = TRUE) %>%
   mutate_at(c("paperwork_violations_5yr", "healthbased_violations_5yr", 
               "total_violations_5yr"), 
             ~replace_na(.,0)) 
+
+# creating a quick graph to investigate results: 
+viol_long <- violation_summary %>%
+  pivot_longer(paperwork_violations_10yr:total_violations_5yr)
+
+# quick stats: 
+# 3702 pwsids in total 
+#   - 703 have had health-based violations over past 5 years
+#   - 1203 have had health-based violations over past 10 years 
+viol_long %>%
+  group_by(name) %>%
+  filter(value > 0) %>% 
+  summarize(total = length(unique(pwsid)))
+
+# how does this relate to %poc?
+census <- demo$census
+poc <- census %>%
+  select(pwsid, estimate_poc_alone_per) 
+
+viol_poc <- merge(viol_long, poc, all.x = TRUE)
+# some are NA because they exist outside of TX 
+
+ggplot(viol_poc, aes(x = estimate_poc_alone_per, y = value, color = name)) + 
+  geom_point() + 
+  facet_wrap(~name, scales = "free") + 
+  theme_bw() + 
+  theme(legend.position = "none") + 
+  labs(x = "% POC", y = "Number of Violations") + 
+  ggtitle("SDWIS Violations By % POC")
 ```
 
 ## How many boil water notices have there been over the past five years?
+```{r}
+# don't have this data yet - need to be FOIA'd
+```
 
 ## Have there been any enforcement actions?
 
 ## What is the Climate Vulerability Index?
+```{r}
+# loading cvi: 
+cvi <- demo$cvi 
+cvi_tidy <- cvi %>%
+  select(-X) %>%
+  rename(census_tract = fips_code)
+
+# loading tract crosswalk: 
+pwsids <- unique(demo$census$pwsid)
+tx_crosswalk <- crosswalk %>%
+  select(-X) %>%
+  filter(pwsid %in% pwsids)
+
+# merging cvi with the crosswalk: 
+cvi_cross <- merge(cvi_tidy, tx_crosswalk, by.x = "census_tract", 
+      by.y = "tract_geoid") %>%
+  mutate(cvi_weighted  = overall_cvi_score*tract_parcel_weight) 
+
+cvi_weighted <- cvi_cross %>%
+  group_by(pwsid) %>%
+  summarize(cvi_weighted_score = weighted.mean(cvi_weighted))
+
+# adding geographies for mapping: 
+pwsid_geometries <- demo$census %>%
+  select(pwsid, geometry)
+
+cvi_weighted_geoms <- merge(cvi_weighted, pwsid_geometries) %>%
+  st_as_sf(.) %>%
+  st_transform(., crs = st_crs(enviro_sw$major_river_basins))
+
+cvi_pal <- colorNumeric(
+  palette = viridis::mako(9),
+  domain = cvi_weighted_geoms$cvi_weighted_score)
+
+leaflet() %>%
+  addProviderTiles(providers$CartoDB.VoyagerNoLabels, group = "Toner Lite") %>%
+  addPolygons(data = cvi_weighted_geoms,
+              opacity = 9,
+              color = ~cvi_pal(cvi_weighted_score),
+              weight = 1,
+              label = paste0("pwsud: ", cvi_weighted_geoms$pwsid,
+                "; cvi: ", cvi_weighted_geoms$cvi_weighted_score)) %>%
+  addLegend("bottomright",
+            pal = cvi_pal,
+            values = cvi_weighted_geoms$cvi_weighted_score,
+            title = "cvi",
+            opacity = 1)
+```
 
 ## Does the system use green energy/focus on green energy?
 
