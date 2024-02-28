@@ -1,0 +1,93 @@
+---
+title: "TX Drinking Water Data Analysis - Hydrology"
+author: "Gabe Watson"
+date: "2024-02-27"
+output: html_document
+---
+## Loading packages 
+```{r}
+library(tidyverse)
+library(leaflet)
+library(sf)
+library(aws.s3)
+```
+
+## Loading data lists 
+```{r}
+# reading demographic, environmental (gw and sw), water delivery system (wds)
+# and financial lists generated in TX_dw_collating: 
+demo <- aws.s3::s3read_using(readRDS, 
+                            object = "s3://tech-team-data/state-drinking-water/TX/clean/TX_demographic_list.RData")
+enviro_sw <- aws.s3::s3read_using(readRDS, 
+                            object = "s3://tech-team-data/state-drinking-water/TX/clean/TX_enviro_surface_list.RData")
+enviro_gw <- aws.s3::s3read_using(readRDS, 
+                            object = "s3://tech-team-data/state-drinking-water/TX/clean/TX_enviro_ground_list.RData")
+wds <- aws.s3::s3read_using(readRDS, 
+                            object = "s3://tech-team-data/state-drinking-water/TX/clean/TX_water_delivery_list.RData")
+fin <- aws.s3::s3read_using(readRDS, 
+                            object = "s3://tech-team-data/state-drinking-water/TX/clean/TX_financial_list.RData")
+keys <- aws.s3::s3read_using(readRDS, 
+                            object = "s3://tech-team-data/state-drinking-water/TX/clean/TX_merging_keys_list.RData")
+crosswalk <- aws.s3::s3read_using(read.csv, 
+                                  object = "s3://tech-team-data/pws_crosswalk/pws_census_tract_weighted_crosswalk.csv")
+```
+
+## Do residents trust (or drink) their tap water?
+# going to pull CCR violations and other metrics of public engagement
+```{r}
+
+
+```
+## Who owns the water system?
+```{r}
+owner_type_code <- c("F","L","M","N","P","S")
+## from sdwis
+owner_type_description <-c("Federal Government","Local Government","Public/Private","Native American","Private","State Government")
+owner_type_merge <- data.frame(owner_type_code,owner_type_description)
+
+## Note adding in violation_summary from TX_dw_analysis_hydrology
+## Filtering to only TX systems
+ownership <- demo$census %>%
+             data.frame()%>%
+             left_join(owner_type_merge)%>%
+             left_join(violation_summary)%>%
+             filter(primacy_agency_code == "TX")
+## Ownership Summary
+##   Ownership Type Count + %
+##   Population Served Count + %
+##   HB + PW by Ownership + 
+##   MHI By Ownership Mean
+##   POC By Ownership Mean
+##   Potential Followup Questions 
+ownershipsummary <- ownership %>%
+                    group_by(owner_type_description, .drop=FALSE)%>%
+                    add_tally()%>%
+                    summarise(estimate_total_pop = sum(estimate_total_pop, na.rm = TRUE), 
+                              n = mean(n, na.rm = TRUE), 
+                              paperwork_violations_5yr = mean(paperwork_violations_5yr, na.rm = TRUE), 
+                              healthbased_violations_5yr = mean(healthbased_violations_5yr, na.rm = TRUE), 
+                              estimate_poc_alone_per = mean(estimate_poc_alone_per, na.rm = TRUE),
+                              estimate_mhi= mean(estimate_mhi, na.rm = TRUE))%>%
+                    rename(owner_type_count = n)%>% 
+                    mutate(percent_pop = estimate_total_pop / sum(estimate_total_pop))%>%
+                    mutate(percent_systems = owner_type_count / sum(owner_type_count))
+
+## Quick Summary ##
+## 61% of systems are local public, but serve 91% of population, private systems comprise 38% of systems and 9% of population.
+## Public systems are slightly lower income (77k priv vs 74k), more poc (26% vs 21%), and more hb violations (1.6 vs 1.3), BUT 
+## Private systems have 17.2 pwork violations vs 5.7 for public...
+## 
+
+
+
+```
+
+## What is the size of the water system?
+```{r}
+## Number of connections 
+## Pop density
+## Pop count
+## Area 
+
+
+```
