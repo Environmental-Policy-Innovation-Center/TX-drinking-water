@@ -488,11 +488,71 @@ well_gw_merge <- gw_wells %>%
   unique()
 # 12997 wells
 
-TX_merging_keys <- list()
-TX_merging_keys[[1]] <- pwsid_sw_merge
-TX_merging_keys[[2]] <- well_gw_merge
+# also want a key for variables included in most analyses, such as MHI, 
+# %POC, and violations (5yr and 10yr) - paperwork and health-based
+census_keys <- demo$census %>%
+  select("pwsid", "estimate_mhi", "estimate_poc_alone_per")
 
-names(TX_merging_keys) <- c("pwsid_sw", "well_gw_county")
+# grabbing sdiws violations, pwsids, and year
+sdwis <- wds$sdwis
+pwsids <- unique(census_keys$pwsid)
+year <- year(Sys.Date())
+
+# calculating number of violations over the past 5 years: 
+viol_5yr <- sdwis %>% 
+  filter(pwsid %in% pwsids) %>%
+  filter(viol_year >= (year - 5)) %>%
+  group_by(pwsid, is_health_based_ind) %>%
+  summarize(total_viol = length(unique(violation_id))) %>%
+  pivot_wider(names_from = is_health_based_ind, values_from = total_viol) %>%
+  rename(paperwork_violations_5yr = N, 
+         healthbased_violations_5yr = Y) %>%
+  mutate_at(c("paperwork_violations_5yr", "healthbased_violations_5yr"), 
+            ~replace_na(.,0)) %>%
+  mutate(total_violations_5yr = sum(paperwork_violations_5yr + healthbased_violations_5yr))
+
+# calculating number of violations over the past 10 years: 
+viol_10yr <- sdwis %>% 
+  filter(pwsid %in% pwsids) %>%
+  filter(viol_year >= (year - 10)) %>%
+  group_by(pwsid, is_health_based_ind) %>%
+  summarize(total_viol = length(unique(violation_id))) %>%
+  pivot_wider(names_from = is_health_based_ind, values_from = total_viol) %>%
+  rename(paperwork_violations_10yr = N, 
+         healthbased_violations_10yr = Y) %>%
+  mutate_at(c("paperwork_violations_10yr", "healthbased_violations_10yr"), 
+            ~replace_na(.,0)) %>%
+  mutate(total_violations_10yr = sum(paperwork_violations_10yr + healthbased_violations_10yr))
+
+# combining into one data frame: 
+violation_summary <-merge(viol_10yr, viol_5yr, by = "pwsid", all.x = TRUE) %>%
+  # mutating since some pwsids might not have had violations over the past 
+  # 5 years
+  mutate_at(c("paperwork_violations_5yr", "healthbased_violations_5yr", 
+              "total_violations_5yr"), 
+            ~replace_na(.,0)) 
+
+# merging with census keys
+analysis_keys <- merge(census_keys, violation_summary, by = "pwsid", 
+                       all = TRUE)
+# for all violation columns - any NAs actually represent zero 
+analysis_keys <- analysis_keys %>%
+  mutate(across(paperwork_violations_10yr:total_violations_5yr, ~replace_na(.,0)))
+# NOTE: NAs in census columns indicate they're missing from the tract crosswalk
+# if they're missing JUST the mhi column, that stat was NA in the census. 
+
+leaflet() %>%
+  addProviderTiles(providers$CartoDB.VoyagerNoLabels, group = "Toner Lite") %>%
+  addPolygons(data = analysis_keys,
+              opacity = 9)
+
+# adding this to a larger list: 
+TX_merging_keys <- list()
+TX_merging_keys[[1]] <- analysis_keys
+TX_merging_keys[[2]] <- pwsid_sw_merge
+TX_merging_keys[[3]] <- well_gw_merge
+
+names(TX_merging_keys) <- c("analysis_keys", "pwsid_sw", "well_gw_county")
 saveRDS(TX_merging_keys, file="./data/clean/TX_merging_keys_list.RData")
 put_object(
   file = "./data/clean/TX_merging_keys_list.RData",

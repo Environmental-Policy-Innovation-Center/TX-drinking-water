@@ -31,81 +31,87 @@ keys <- aws.s3::s3read_using(readRDS,
                             object = "s3://tech-team-data/state-drinking-water/TX/clean/TX_merging_keys_list.RData")
 
 crosswalk <- aws.s3::s3read_using(read.csv, 
-                                  object = "s3://tech-team-data/pws_crosswalk/pws_census_tract_weighted_crosswalk.csv")
+                                  object = "s3://tech-team-data/pws_crosswalk/pws_census_tract_weighted_crosswalk.csv")%>%
+  # if the geoid is missing prefix 0, add it back in
+  mutate(tract_geoid = as.character(tract_geoid),
+         tract_geoid = case_when(
+           str_length(tract_geoid) == 10 ~ paste0(0, tract_geoid),
+           TRUE ~ tract_geoid
+         )) %>%
+  # some tract geoids in the crosswalk are NAs - assuming these are errors 
+  filter(!(is.na(tract_geoid)))
 ```
 
 ## Does the system have adequate water supply?
+```{r}
+# not as important for E TX deliverable not but state-wide analysis 
+# mine to 2050 
 
+# demand calculations are not always easy due to tech advancements - take 
+# it with a grain of salt 
+
+# we can't assume boundaries with aquifers - but we don't really have a choice 
+# https://iopscience.iop.org/article/10.1088/1748-9326/ab0db7/meta
+```
 
 ## Has the system reported any water quality violations?
 ```{r}
-# grabbing sdiws violations, pwsids, and year
-sdwis <- wds$sdwis
-pwsids <- unique(demo$census$pwsid)
-year <- year(Sys.Date())
-
-# calculating number of violations over the past 5 years: 
-viol_5yr <- sdwis %>% 
-  filter(pwsid %in% pwsids) %>%
-  filter(viol_year >= (year - 5)) %>%
-  group_by(pwsid, is_health_based_ind) %>%
-  summarize(total_viol = length(unique(violation_id))) %>%
-  pivot_wider(names_from = is_health_based_ind, values_from = total_viol) %>%
-  rename(paperwork_violations_5yr = N, 
-         healthbased_violations_5yr = Y) %>%
-  mutate_at(c("paperwork_violations_5yr", "healthbased_violations_5yr"), 
-            ~replace_na(.,0)) %>%
-  mutate(total_violations_5yr = sum(paperwork_violations_5yr + healthbased_violations_5yr))
-
-# calculating number of violations over the past 10 years: 
-viol_10yr <- sdwis %>% 
-  filter(pwsid %in% pwsids) %>%
-  filter(viol_year >= (year - 10)) %>%
-  group_by(pwsid, is_health_based_ind) %>%
-  summarize(total_viol = length(unique(violation_id))) %>%
-  pivot_wider(names_from = is_health_based_ind, values_from = total_viol) %>%
-  rename(paperwork_violations_10yr = N, 
-         healthbased_violations_10yr = Y) %>%
-  mutate_at(c("paperwork_violations_10yr", "healthbased_violations_10yr"), 
-            ~replace_na(.,0)) %>%
-  mutate(total_violations_10yr = sum(paperwork_violations_10yr + healthbased_violations_10yr))
-
-# combining into one data frame: 
-violation_summary <-merge(viol_10yr, viol_5yr, by = "pwsid", all.x = TRUE) %>%
-  # mutating since some pwsids might not have had violations over the past 
-  # 5 years
-  mutate_at(c("paperwork_violations_5yr", "healthbased_violations_5yr", 
-              "total_violations_5yr"), 
-            ~replace_na(.,0)) 
+# grabbing sdiws violations by pwsid: 
+viols <- keys$analysis_keys
 
 # creating a quick graph to investigate results: 
-viol_long <- violation_summary %>%
+viol_long <- viols %>%
+  as.data.frame() %>%
+  select(-geometry) %>%
   pivot_longer(paperwork_violations_10yr:total_violations_5yr)
 
-# quick stats: 
-# 3702 pwsids in total 
-#   - 703 have had health-based violations over past 5 years
-#   - 1203 have had health-based violations over past 10 years 
+# violation stats: 
 viol_long %>%
   group_by(name) %>%
   filter(value > 0) %>% 
   summarize(total = length(unique(pwsid)))
 
-# how does this relate to %poc?
-census <- demo$census
-poc <- census %>%
-  select(pwsid, estimate_poc_alone_per) 
-
-viol_poc <- merge(viol_long, poc, all.x = TRUE)
-# some are NA because they exist outside of TX 
-
-ggplot(viol_poc, aes(x = estimate_poc_alone_per, y = value, color = name)) + 
+ggplot(viol_long, aes(x = estimate_poc_alone_per, y = value, color = name)) + 
   geom_point() + 
-  facet_wrap(~name, scales = "free") + 
+  facet_wrap(~name, scales = "free") +
   theme_bw() + 
-  theme(legend.position = "none") + 
+  theme(legend.position = "none") +
   labs(x = "% POC", y = "Number of Violations") + 
   ggtitle("SDWIS Violations By % POC")
+
+ggplot(viol_long, aes(x = estimate_mhi, y = value, color = name)) + 
+  geom_point() + 
+  facet_wrap(~name, scales = "free") +
+  theme_bw() + 
+  labs(x = "MHI", y = "Number of Violations") + 
+  ggtitle("SDWIS Violations By Median Household Income")
+
+# also interested in the type of violation: 
+# viol_types <- sdwis %>%
+#   group_by(pwsid, viol_year, violation_category_code) %>%
+#   tally()
+# # from: https://enviro.epa.gov/enviro/EF_METADATA_HTML.sdwis_page?p_column_name=VIOLATION_CATEGORY_CODE
+# # Other, MON, RPT (?), MR (monitoring and reporting), 
+# # TT (treatment technique), MCL (max contaminant level), and 
+# # MRDL (max residual disinfectant)
+# unique(viol_types$violation_category_code)
+
+
+# Quick Summary: 
+# 4542 pwsids in total 
+#   - 703 have had health-based violations over past 5 years (15.48%)
+#   - 1201 have had health-based violations over past 10 years (26.44%)
+#   
+#   - 2673 have had paperwork violations over the past 5 years (58.85)
+#   - 3637 have had paperwork violations over the past 10 years (80.07%)
+# 
+# If your median household income is less than $100,000, you're much more likely 
+# to receive water from a system that had a health-based violation over the 
+# past 5 years.
+# 
+# Interestingly, if your community has <30% POC, you're more likely to have a
+# health-based violation over the past 5 and 10 years... but that might just be
+# because more systems have small %POC
 ```
 
 ## How many boil water notices have there been over the past five years?
@@ -114,6 +120,13 @@ ggplot(viol_poc, aes(x = estimate_poc_alone_per, y = value, color = name)) +
 ```
 
 ## Have there been any enforcement actions?
+```{r}
+sdwis <- wds$sdwis
+
+sdwis_filt_enf %>%
+  group_by(pwsid, enf_year) %>%
+  distinct(enforcement_action_type_code) 
+```
 
 ## What is the Climate Vulerability Index?
 ```{r}
@@ -156,8 +169,8 @@ leaflet() %>%
               opacity = 9,
               color = ~cvi_pal(cvi_weighted_score),
               weight = 1,
-              label = paste0("pwsud: ", cvi_weighted_geoms$pwsid,
-                "; cvi: ", cvi_weighted_geoms$cvi_weighted_score)) %>%
+              label = paste0("pwsid: ", cvi_weighted_geoms$pwsid,
+                "; cvi: ", round(cvi_weighted_geoms$cvi_weighted_score, 2))) %>%
   addLegend("bottomright",
             pal = cvi_pal,
             values = cvi_weighted_geoms$cvi_weighted_score,
@@ -166,9 +179,134 @@ leaflet() %>%
 ```
 
 ## Does the system use green energy/focus on green energy?
+```{r}
+# don't know if we can answer that question 
+# Charles to reach out to Danielle for datasets or any extra 
+# clarification 
+```
 
 ## How much water loss does the system have?
+```{r}
+pwsid_keys <- demo$census %>%
+  select(pwsid, pws_name) %>%
+  mutate(pws_name_tidy = str_to_upper(pws_name), 
+         pws_name_tidy = str_squish(pws_name_tidy)) %>%
+  unique() %>%
+  select(-pws_name)
+  # st_as_sf(.) %>%
+  # st_transform(., crs = st_crs(enviro_sw$major_river_basins))
+
+wl <- wds$water_loss %>%
+  janitor::clean_names() %>%
+  select(year, name_of_utility, real_loss_cost_in_dollars, 
+         apparent_loss_cost_in_dollars) %>%
+  mutate(name_of_utility_tidy = str_to_upper(name_of_utility), 
+         name_of_utility_tidy = str_squish(name_of_utility_tidy)) 
+
+# matching names and pwsids: 
+wl_pwsids <- merge(wl, pwsid_keys,
+                   by.x = "name_of_utility_tidy", by.y = "pws_name_tidy", 
+                   all.x = TRUE)
+# 2,768 water systems 
+  
+# how many don't have a name match? 209
+missing_pwsid <- wl_pwsids %>%
+  filter(is.na(pwsid)) %>%
+  select(name_of_utility_tidy) %>%
+  unique()
+
+# pulling name matches from a webscrape: https://dww2.tceq.texas.gov/DWW/JSP/SearchDispatch?number=&name=&ActivityStatusCD=All&county=All&WaterSystemType=All&SourceWaterType=All&SampleType=null&begin_date=2%2F8%2F2022&end_date=2%2F8%2F2024&action=Search+For+Water+Systems
+URL <- "https://docs.google.com/spreadsheets/d/1Ds2GeJ8AMWqhBKRcIAXgO0Po8c9l_syVz4JFkeCNyXk/edit#gid=0"
+dl <- googledrive::drive_download(
+  as_id(URL),
+  path = 'temp1.xlsx', 
+  type = "xlsx")
+pwsid_names <- readxl::read_excel('temp1.xlsx', col_names = TRUE) %>%
+  janitor::clean_names() %>%
+  mutate(water_system_name = str_to_upper(water_system_name), 
+         water_system_name = str_squish(water_system_name)) 
+file.remove("temp1.xlsx")
+
+# removing fact sheet summary string and tidying before name merge: 
+pwsid_names$utility_name_tidy <- unlist(strsplit(pwsid_names$water_system_name, " FACT SHEET SUMMARY SHEET"))
+pwsid_names_tidy <- pwsid_names %>% select(water_system_no, utility_name_tidy) %>%
+  rename(pwsid = water_system_no)
+       
+match_names <- merge(missing_pwsid, pwsid_names_tidy, by.x = "name_of_utility_tidy", 
+      by.y = "utility_name_tidy", all.x = TRUE) %>%
+  filter(!is.na(pwsid))
+
+# recombining: 
+all_pwsid_names <- merge(wl_pwsids, match_names, by = "name_of_utility_tidy", all.x = TRUE) %>%
+  mutate(pwsid = case_when(
+    is.na(pwsid.x) ~ pwsid.y, 
+    is.na(pwsid.y) ~ pwsid.x, 
+    TRUE ~ "no match"
+  )) %>%
+  select(-c(pwsid.x, pwsid.y))
+
+# there are still 124 pwsids missing: 
+all_pwsid_names %>%
+  filter(is.na(pwsid)) %>%
+  distinct(name_of_utility_tidy)
+# TODO: this info might be found on DWW if I remember correctly... might help
+# match some of these but honeslty there's quite a few here that I could do 
+# manually or with some fancy fuzzy string matching 
+
+
+```
 
 ## What type of treatment is in use? 
+```{r}
+# statewide basis - people pulling from sw are using different treatment 
+# techniques than groundwater 
+# however - there is likely going to be minimal difference 
+#         - chlorine and fluoride and mechanical (membrane)
+# double-check 
+# filter by counties - the categories would get dropped down to 5 and then 
+# determine if it's realisitc or not 
+
+treatments_dec17 <- aws.s3::s3read_using(read.csv, 
+                           object = "state-drinking-water/TX/raw/TX_TCEQ_DWW/TX_20231217/WaterSystemFacilities/TX_Treatment Plant Unit Process Flows_20231217_20231229203427.csv",
+                           bucket = "tech-team-data") %>%
+  clean_names()
+
+treatments_dec03 <- aws.s3::s3read_using(read.csv, 
+                           object = "state-drinking-water/TX/raw/TX_TCEQ_DWW/TX_20231203/WaterSystemFacilities/TX_Treatment Plant Unit Process Flows_20231203.csv",
+                           bucket = "tech-team-data") %>%
+  clean_names()
+
+# this is probably not a comprehensive list 
+all_treat <- rbind(treatments_dec03, treatments_dec17)
+treat_simple <- all_treatments %>%
+  group_by(water_system_no) %>%
+  distinct(supply)
+
+# desal tech --> brine is injected into wells?!?! like fracking?!
+```
 
 ## What is the source of water? 
+```{r}
+# we can match sw intakes with pwsids: 
+sw_intake_keys <- keys$pwsid_sw
+
+census <- demo$census
+pwsid_info <- census %>%
+  select(pwsid:pop_density) 
+
+pwsid_sw <- merge(pwsid_info, sw_intake_keys, by = c("pwsid"), all.y = TRUE)
+# matched with 449 entries - some pwsids seem to take water from multiple 
+# surface water reservoirs? Also there's a handful of pwsids that are "GW" but 
+# matched with a surface water intake 
+
+# looking at county and groundwater keys: 
+gw_keys <- keys$well_gw_county
+county_gw <- gw_keys %>%
+  group_by(county_name) %>%
+  distinct(aquifer_one, aquifer_two, aquifer_three, 
+           aquifer_four, aquifer_five)
+```
+
+Potential rabbit holes of interest: 
+- SDIWS violations - investigating the type of violation (i.e. MON, RPT (?), MR (monitoring and reporting), TT (treatment technique), MCL (max contaminant level), and MRDL (max residual disinfectant))
+- Deeper dive into SRF green project reserve

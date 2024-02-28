@@ -1,0 +1,275 @@
+---
+title: "TX Drinking Water Data Analysis - Socioeconomic"
+author: "EmmaLi Tsai"
+date: "2024-02-23"
+output: html_document
+---
+## Loading packages 
+```{r}
+library(tidyverse)
+library(leaflet)
+library(sf)
+library(aws.s3)
+```
+
+## Loading data lists 
+```{r}
+# reading demographic, environmental (gw and sw), water delivery system (wds)
+# and financial lists generated in TX_dw_collating: 
+demo <- aws.s3::s3read_using(readRDS, 
+                            object = "s3://tech-team-data/state-drinking-water/TX/clean/TX_demographic_list.RData")
+enviro_sw <- aws.s3::s3read_using(readRDS, 
+                            object = "s3://tech-team-data/state-drinking-water/TX/clean/TX_enviro_surface_list.RData")
+enviro_gw <- aws.s3::s3read_using(readRDS, 
+                            object = "s3://tech-team-data/state-drinking-water/TX/clean/TX_enviro_ground_list.RData")
+wds <- aws.s3::s3read_using(readRDS, 
+                            object = "s3://tech-team-data/state-drinking-water/TX/clean/TX_water_delivery_list.RData")
+fin <- aws.s3::s3read_using(readRDS, 
+                            object = "s3://tech-team-data/state-drinking-water/TX/clean/TX_financial_list.RData")
+
+keys <- aws.s3::s3read_using(readRDS, 
+                            object = "s3://tech-team-data/state-drinking-water/TX/clean/TX_merging_keys_list.RData")
+
+crosswalk <- aws.s3::s3read_using(read.csv, 
+                                  object = "s3://tech-team-data/pws_crosswalk/pws_census_tract_weighted_crosswalk.csv")
+```
+
+## What proportion of rate payers are delinquent in payments?
+
+## How have water utilities been funded historically? 
+```{r}
+# hold for SRF data 
+```
+
+## What races/ethnicities are served by what system? 
+```{r}
+census <- demo$census
+race_stats <- census %>%
+  select(pwsid, estimate_white_alone_per:estimate_mixed_alone_per) %>%
+  as.data.frame(.) %>%
+  select(-geometry) 
+
+race_long <- race_stats %>%
+  pivot_longer(., estimate_white_alone_per:estimate_mixed_alone_per)
+
+ggplot(race_long, aes(x = value, color = name, fill = name)) + 
+  geom_histogram() + 
+  facet_wrap(~name) + 
+  theme_bw() 
+
+# combining this info with violations: 
+analysis_keys <- keys$analysis_keys
+race_viols_wide <- merge(race_stats, analysis_keys, by = "pwsid") 
+race_viols <- merge(race_long, analysis_keys, by = "pwsid") 
+
+race_viol_long <- pivot_longer(race_viols, cols = paperwork_violations_10yr:total_violations_5yr, 
+                               names_to = "viol_type", values_to = "total_viols")
+
+ggplot(race_viol_long, aes(x = value, y = total_viols, color = name)) +
+  geom_point() + 
+  facet_wrap(~viol_type, scales = "free_y") + 
+  scale_color_discrete(name = "") +
+  labs(x = "% Population of Race", y = "Total Violations") + 
+  theme_minimal() 
+
+# calculating stats: 
+mean_stats <- race_viols_wide %>%
+  group_by(name, viol_type) %>%
+  summarize(mean_percent_race = mean(value, na.rm = T), 
+            mean_viol = mean(total_viols))
+
+# Overall summary: 
+# - Texas is pretty segregated - % white alone is generally greater than 75%, 
+#   and very little mixing between white and other races (i.e., the spread of 
+#   races looks parabolic)
+# - The second most common race is black and mixed races. 
+# - Qualitatively, it seems like violations might not be tied to race - 
+#   both pwids with high or low %POC also appears to have similar chance of 
+#   having health-based violations 
+```
+
+
+## What are the education levels of those served? 
+```{r}
+census <- demo$census
+# grabbing % of population wihout any schooling, and those with a prof
+# degree
+edu_level <- census %>%
+  select(pwsid, estimate_no_school_per:estimate_prof_degree_per) %>%
+  as.data.frame() %>%
+  select(-geometry)
+
+analysis_keys <- keys$analysis_keys
+edu_level_analysis <- merge(edu_level, analysis_keys, by = "pwsid") 
+
+# what do these distributions look like?
+ggplot(edu_level_analysis, aes(x = estimate_no_school_per)) + 
+  geom_density(color = "red", fill = "red") + 
+  geom_density(aes(x = estimate_prof_degree_per), color = "darkred", 
+               fill = "darkred", alpha = 0.5)
+
+# how does no schooling relate to violations??
+ggplot(edu_level_analysis, aes(x = estimate_no_school_per, 
+                               y = healthbased_violations_10yr)) + 
+  geom_point() + 
+  geom_point(aes(x = estimate_prof_degree_per), color = "darkred")
+
+# what's the correlation between schooling and mhi?
+mhi_school <- edu_level_analysis %>%
+  pivot_longer(estimate_no_school_per:estimate_prof_degree_per)
+ggplot(mhi_school, aes(x = value, y = estimate_mhi)) + 
+  geom_point() + 
+  facet_wrap(~name) + 
+  geom_smooth() + 
+  geom_point(data = mhi_school %>% filter(healthbased_violations_10yr > 0), 
+             color = "darkred") + 
+  geom_point(data = mhi_school %>% filter(healthbased_violations_5yr > 0), 
+             color = "red")
+
+# how does this relate to violations? 
+viol_school <- edu_level_analysis %>%
+  pivot_longer(paperwork_violations_10yr:total_violations_5yr)
+ggplot(viol_school, aes(x = estimate_no_school_per, y = value)) + 
+  geom_point() + 
+  facet_wrap(~name, scales = "free") + 
+  geom_point(aes(x = estimate_prof_degree_per), color = "red", 
+             alpha = 0.5) + 
+  labs(x = "% Population Without Schooling (black points), and with a Prof Degree (red points)", 
+       y = "Number of Violations") + 
+  theme_minimal()
+
+
+# how do violations relate to education level?
+summary_health_viol <- edu_level_analysis %>%
+ group_by(estimate_no_school_per) %>%
+  summarize(mean_viol = mean(healthbased_violations_5yr, na.rm = TRUE))
+summary_health_viol_prof <- edu_level_analysis %>%
+ group_by(estimate_prof_degree_per) %>%
+  summarize(mean_viol = mean(healthbased_violations_5yr, na.rm = TRUE))
+
+ggplot(summary_health_viol, aes(x = estimate_no_school_per, 
+                                y = mean_viol)) + 
+  geom_point() + 
+  geom_point(data = summary_health_viol_prof, aes(x = estimate_prof_degree_per, 
+                                                  y = mean_viol), color = "red")
+
+# basic stats: 
+edu_level_analysis %>%
+  filter(estimate_no_school_per >= 5) %>%
+  count()
+edu_level_analysis %>%
+  filter(estimate_prof_degree_per >= 5) %>%
+  count()
+
+# Overall summary:
+# - As the % of people without schooling increases, MHI decreases
+# - As the % of people with professional degrees increases, MHI increases 
+#   but appears to level out after the percentage of people with prof degrees 
+#   reaches ~10% 
+# - 72 (1.6%) pwsids serve communities where >= 5% of the community has had no form of 
+#   schooling. 
+# - 54 (1.2%) pwsids serve communities where >= 5% of the community has professional 
+#   degrees, and visually it appears that communities that are more educated
+#   have less health-based violations 
+```
+
+## What are the population density demographics of those served? 
+
+## What languages are spoken by those served?
+```{r}
+census <- demo$census
+# grabbing language spoken at home: 
+lang <- census %>%
+  select(pwsid, estimate_only_english_per:estimate_other_lang_per) %>%
+  as.data.frame() %>%
+  select(-geometry)
+
+analysis_keys <- keys$analysis_keys
+lang_analysis <- merge(lang, analysis_keys, by = "pwsid") 
+
+# plot to see where we're at: 
+ggplot(lang_analysis, aes(x = estimate_only_english_per)) + 
+  geom_histogram()
+
+# plots to investigate relationships between language spoken at home and 
+# other metrics: 
+ggplot(lang_analysis, aes(x = estimate_only_english_per, 
+                          y = estimate_poc_alone_per)) + 
+  geom_point() + 
+  geom_smooth()
+
+ggplot(lang_analysis, aes(x = estimate_only_english_per, 
+                          y = estimate_mhi)) + 
+  geom_point() + 
+  geom_smooth()
+
+ggplot(lang_analysis, aes(x = estimate_only_english_per, 
+                          y = healthbased_violations_5yr)) + 
+  geom_point() 
+
+# quick stats: 
+lang_analysis %>%
+  filter(estimate_only_english_per >= 60) %>%
+  count()
+
+# Overall findings 
+#   - to no surprise, the higher % that speak English at home, the lower the 
+#     % POC. 
+#   - as the percentage of people that speak English at home increases, the 
+#     MHI increases 
+#   - 78.8% of sabs serve communities where >= 60% of people speak only English 
+#   - as the % that speak only English increases, the number of health-based 
+#     violations increase, but that might be an artifact of the fact there's 
+#     more utilities that serve only English speaking households 
+```
+
+## What nationality/immigration status reflect those seved? 
+```{r}
+census <- demo$census
+# grabbing immigration status: 
+immi_status <- census %>%
+  select(pwsid, estimate_foreign_per) %>%
+  as.data.frame() %>%
+  select(-geometry)
+
+ggplot(immi_status, aes(x = estimate_foreign_per)) + 
+  geom_histogram()
+
+immi_status %>%
+  filter(estimate_foreign_per <= 20) %>%
+  count()
+
+# how does immigration status relate to poc, mhi, and sdwis violations: 
+analysis_keys <- keys$analysis_keys
+immi_analysis <- merge(immi_status, analysis_keys, by = "pwsid") 
+
+ggplot(immi_analysis, aes(x = estimate_foreign_per, 
+                          y = estimate_poc_alone_per)) + 
+  geom_point() + 
+  geom_smooth()
+
+ggplot(immi_analysis, aes(x = estimate_foreign_per, 
+                          y = estimate_mhi)) + 
+  geom_point() + 
+  geom_smooth()
+
+ggplot(immi_analysis, aes(x = estimate_foreign_per, 
+                          y = healthbased_violations_5yr)) + 
+  geom_point() 
+
+# Overall findings: 
+# - 83.14% of pwsids serve communities where less than 20% immigrated from a 
+#   different county. 
+# - to no surprise, pwsids with larger % immigrant status also have 
+#   higher % POC - this is a pretty strong relationship. 
+# - pwsids with larger % immigrant populations generally have smaller MHI, 
+#   but this correlation is pretty weak 
+# - pwsids with <= 20% of the community of immigrant status generally have 
+#   more health-based violations over the past 5 years, but hat might 
+#   be due to the fact there are more pwsids that fall into this category. 
+```
+
+## How affordable is the water? 
+
+# Rabbit holes: 
+#   - deeper dive into education categories - basically just have no schooling and prof degrees at the moment

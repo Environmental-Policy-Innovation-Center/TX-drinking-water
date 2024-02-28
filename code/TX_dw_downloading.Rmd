@@ -52,8 +52,6 @@ _______________________________________________________________________________
 ## Demographic #################################################################
 # grabbing sabs: 
 sab <- get_sab(states = c("TX"), crs = ("ESRI:102296"))
-# making note the of the pwsids located in TX: 
-pwsids <- unique(sab$pwsid)
 
 # census data - grabbing block group stats for now 
 # vars_acs <- load_variables(year = 2021, "acs5")
@@ -78,7 +76,7 @@ census_vars <- c(total_pop = "B01003_001",
 census <- tidycensus::get_acs(
   geography = "tract", 
   variables = census_vars, 
-  state = "TX", 
+  state = c("TX", "AR"), # also wanted to grab stats for Texarkana  
   year = 2021,
   geometry = TRUE
 )
@@ -88,11 +86,43 @@ census_tidy <- census
 counties <- unlist(strsplit(census_tidy$NAME, split = ","))
 census_tidy$counties <- trimws(counties[grepl("County", counties)])
 
+# adding state: 
+census_tidy <- census_tidy %>%
+  mutate(state = case_when(
+    grepl("^[05]", GEOID) ~ "Arkansas", 
+    TRUE ~ "Texas"
+  ))
+
+# running an intersection to JUST grab the pwsids in TX - since some of the 
+# sabs intersected have the state_code == "TX" but actually don't exist in TX: 
+tx_only <- census_tidy %>% filter(state == "Texas")
+tx <- st_union(tx_only) %>%
+  # adding a 0.01dd buffer to capture ones in Texarkana 
+  st_buffer(., dist = 0.01)
+sab_sf <- st_transform(sab, crs = st_crs(tx))
+tx_sabs <- st_intersection(sab_sf, tx)
+# NOTE: there are ~ four pwsids (one of which starts with "NY") that have 
+# actual boundaries in TX. 
+# filtering for intersected SABs to retain original geographies: 
+all_tx_sabs <- sab_sf %>% filter(pwsid %in% tx_sabs$pwsid)
+# making note the of the pwsids located in TX: 
+pwsids <- unique(all_tx_sabs$pwsid)
+
+
 # grabbing tract crosswalk: 
-tract_crosswalk <-  aws.s3::s3read_using(read.csv, 
+tract_crosswalk <-aws.s3::s3read_using(read.csv, 
                                          object = "s3://tech-team-data/pws_crosswalk/pws_census_tract_weighted_crosswalk.csv") %>%
   select(-X) %>%
-  filter(pwsid %in% pwsids)
+  filter(pwsid %in% pwsids) %>%
+  # if the geoid is missing prefix 0, add it back in
+  mutate(tract_geoid = as.character(tract_geoid),
+         tract_geoid = case_when(
+           str_length(tract_geoid) == 10 ~ paste0(0, tract_geoid),
+           TRUE ~ tract_geoid
+         )) %>%
+  # some tract geoids in the crosswalk are NAs - assuming these are errors 
+  filter(!(is.na(tract_geoid)))
+
 
 # crosswalking census tract information with pwsids: 
 census_wide <- pivot_wider(census_tidy, 
@@ -102,14 +132,14 @@ census_wide <- pivot_wider(census_tidy,
 sab_cross_census <- merge(census_wide, 
                           tract_crosswalk, 
                           by.x = "GEOID", 
-                          by.y = "tract_geoid", all = T)
+                          by.y = "tract_geoid", all.y = T)
 
 # accounting for block weights by multiplying race stats by tract
 # parcel weights - purposefully leaving out mhi to calculate that using 
 # a weighted mean: 
 sab_cross_census_weight <- sab_cross_census %>% 
   mutate(across(estimate_total_pop:estimate_prof_degree, ~.*tract_parcel_weight)) %>%
-    mutate(across(estimate_under_6:estimate_other_lang, ~.*tract_parcel_weight))
+  mutate(across(estimate_under_6:estimate_other_lang, ~.*tract_parcel_weight))
 
 # sum across pwsid, rounding to control for decimal places, and estimate mhi 
 # using a weighted mean: 
@@ -137,7 +167,7 @@ sab_census <- merge(sab_census_crosswalked, sab_census_per,
   select(-c("estimate_total_pop_per", "estimate_mhi_per"))
 
 # combining to service area boundary dataset: 
-sab_tidy <- sab
+sab_tidy <- all_tx_sabs
 sab_census <- merge(sab_tidy, as.data.frame(sab_census), by = "pwsid", all.x = T)
 
 # SAB & Census - writing this to s3: 
