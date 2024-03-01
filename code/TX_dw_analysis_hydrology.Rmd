@@ -176,13 +176,15 @@ leaflet() %>%
             values = cvi_weighted_geoms$cvi_weighted_score,
             title = "cvi",
             opacity = 1)
+
+# Overall findings: 
+# cities had a higher CVI, if you're in the suburbs of a city you have a lower 
+# CVI, rural areas have higher CVI 
 ```
 
 ## Does the system use green energy/focus on green energy?
 ```{r}
-# don't know if we can answer that question 
-# Charles to reach out to Danielle for datasets or any extra 
-# clarification 
+# Flagging this one for a deeper dive in the future 
 ```
 
 ## How much water loss does the system have?
@@ -190,7 +192,13 @@ leaflet() %>%
 pwsid_keys <- demo$census %>%
   select(pwsid, pws_name) %>%
   mutate(pws_name_tidy = str_to_upper(pws_name), 
-         pws_name_tidy = str_squish(pws_name_tidy)) %>%
+         pws_name_tidy = str_squish(pws_name_tidy), 
+          # remove hyphens 
+         pws_name_tidy = gsub("-", "", pws_name_tidy), 
+         # remove all spaces 
+         pws_name_tidy = gsub(" ", "", pws_name_tidy), 
+         # remove #
+         pws_name_tidy = gsub("#", "", pws_name_tidy)) %>%
   unique() %>%
   select(-pws_name)
   # st_as_sf(.) %>%
@@ -201,15 +209,21 @@ wl <- wds$water_loss %>%
   select(year, name_of_utility, real_loss_cost_in_dollars, 
          apparent_loss_cost_in_dollars) %>%
   mutate(name_of_utility_tidy = str_to_upper(name_of_utility), 
-         name_of_utility_tidy = str_squish(name_of_utility_tidy)) 
+         name_of_utility_tidy = str_squish(name_of_utility_tidy), 
+           # remove hyphens 
+         name_of_utility_tidy = gsub("-", "", name_of_utility_tidy), 
+         # remove all spaces 
+         name_of_utility_tidy = gsub(" ", "", name_of_utility_tidy), 
+         # remove #
+         name_of_utility_tidy = gsub("#", "", name_of_utility_tidy))
 
 # matching names and pwsids: 
 wl_pwsids <- merge(wl, pwsid_keys,
                    by.x = "name_of_utility_tidy", by.y = "pws_name_tidy", 
                    all.x = TRUE)
-# 2,768 water systems 
+# 2,773 water systems 
   
-# how many don't have a name match? 209
+# how many don't have a name match? 200
 missing_pwsid <- wl_pwsids %>%
   filter(is.na(pwsid)) %>%
   select(name_of_utility_tidy) %>%
@@ -230,7 +244,13 @@ file.remove("temp1.xlsx")
 # removing fact sheet summary string and tidying before name merge: 
 pwsid_names$utility_name_tidy <- unlist(strsplit(pwsid_names$water_system_name, " FACT SHEET SUMMARY SHEET"))
 pwsid_names_tidy <- pwsid_names %>% select(water_system_no, utility_name_tidy) %>%
-  rename(pwsid = water_system_no)
+  rename(pwsid = water_system_no) %>%
+  # remove hyphens 
+  mutate(utility_name_tidy = gsub("-", "", utility_name_tidy), 
+         # remove all spaces 
+         utility_name_tidy = gsub(" ", "", utility_name_tidy), 
+         # remove #
+         utility_name_tidy = gsub("#", "", utility_name_tidy))
        
 match_names <- merge(missing_pwsid, pwsid_names_tidy, by.x = "name_of_utility_tidy", 
       by.y = "utility_name_tidy", all.x = TRUE) %>%
@@ -245,14 +265,25 @@ all_pwsid_names <- merge(wl_pwsids, match_names, by = "name_of_utility_tidy", al
   )) %>%
   select(-c(pwsid.x, pwsid.y))
 
-# there are still 124 pwsids missing: 
+# there are still 115 pwsids missing: 
 all_pwsid_names %>%
   filter(is.na(pwsid)) %>%
   distinct(name_of_utility_tidy)
-# TODO: this info might be found on DWW if I remember correctly... might help
-# match some of these but honeslty there's quite a few here that I could do 
-# manually or with some fancy fuzzy string matching 
 
+# TODO: check out the fuzzy merging code that Phil sent for matching the 
+# remainder of these pwsids - most of them can reasonably match to the 
+# excel spreadsheet that I read in but would rather not do that by hand 
+
+# pwsids that require fuzzy matching: 
+fuzzy <- all_pwsid_names %>%
+  filter(is.na(pwsid)) %>%
+  distinct(name_of_utility_tidy) 
+
+library(fuzzyjoin)
+name_dist <- stringdist_left_join(fuzzy, pwsid_names_tidy, 
+                                  by = c("name_of_utility_tidy" = "utility_name_tidy"),
+                                  method = "cosine",
+                                  max_dist = 2, distance_col = "dist") 
 
 ```
 

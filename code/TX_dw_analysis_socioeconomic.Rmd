@@ -35,6 +35,10 @@ crosswalk <- aws.s3::s3read_using(read.csv,
 ```
 
 ## What proportion of rate payers are delinquent in payments?
+```{r}
+# I don't think we have this data - perhaps we could use the 
+# water affordability data as a way to get at this question?
+```
 
 ## How have water utilities been funded historically? 
 ```{r}
@@ -45,17 +49,20 @@ crosswalk <- aws.s3::s3read_using(read.csv,
 ```{r}
 census <- demo$census
 race_stats <- census %>%
-  select(pwsid, estimate_white_alone_per:estimate_mixed_alone_per) %>%
+  select(pwsid, estimate_white_alone_per:estimate_mixed_alone_per, 
+         estimate_poc_alone_per, estimate_hisp_alone_per, estimate_mhi) %>%
   as.data.frame(.) %>%
   select(-geometry) 
 
 race_long <- race_stats %>%
-  pivot_longer(., estimate_white_alone_per:estimate_mixed_alone_per)
+  pivot_longer(., estimate_white_alone_per:estimate_mhi)
 
+# histograms of % each race bin: 
 ggplot(race_long, aes(x = value, color = name, fill = name)) + 
   geom_histogram() + 
-  facet_wrap(~name) + 
-  theme_bw() 
+  facet_wrap(~name, scales = "free") + 
+  theme_bw() +
+  theme(legend.position = "bottom")
 
 # combining this info with violations: 
 analysis_keys <- keys$analysis_keys
@@ -65,48 +72,132 @@ race_viols <- merge(race_long, analysis_keys, by = "pwsid")
 race_viol_long <- pivot_longer(race_viols, cols = paperwork_violations_10yr:total_violations_5yr, 
                                names_to = "viol_type", values_to = "total_viols")
 
-ggplot(race_viol_long, aes(x = value, y = total_viols, color = name)) +
+ggplot(race_viol_long %>% filter(viol_type %in% c("healthbased_violations_10yr", 
+                                                  "healthbased_violations_5yr")), 
+       aes(x = value, y = total_viols, color = viol_type)) +
   geom_point() + 
-  facet_wrap(~viol_type, scales = "free_y") + 
+  facet_wrap(~name, scales = "free") + 
   scale_color_discrete(name = "") +
   labs(x = "% Population of Race", y = "Total Violations") + 
-  theme_minimal() 
+  theme_minimal() + 
+  theme(legend.position = "bottom")
 
-# calculating stats: 
-mean_stats <- race_viols_wide %>%
-  group_by(name, viol_type) %>%
-  summarize(mean_percent_race = mean(value, na.rm = T), 
-            mean_viol = mean(total_viols))
+# calculating and distribution of violations across different race bins: 
+race_bin_stats <- c(0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100)
+races <- race_viols_wide %>%
+  select(estimate_white_alone_per:estimate_hisp_alone_per) %>%
+  names()
+
+race_viol_breakdown <- data.frame()
+for(i in 1:length(races)){
+  race_i <- races[i]
+  race_alone_bins <- race_viols_wide %>%
+    as.data.frame() %>%
+    select(-geometry) %>%
+    mutate(poc_bin = cut(!!sym(race_i), race_bin_stats)) %>%
+    group_by(poc_bin) %>%
+    summarize(total_utilities = n(),
+              paperwork_10yr = mean(paperwork_violations_10yr), 
+              paperwork_5yr = mean(paperwork_violations_5yr), 
+              health_10yr = mean(healthbased_violations_10yr), 
+              health_5yr = mean(healthbased_violations_5yr)) %>%
+    mutate(race = race_i)
+  race_viol_breakdown <- rbind(race_viol_breakdown, race_alone_bins)
+}
+
+# this is the general final takeaway for race stats: 
+race_viol_breakdown
+
+
+# just focusing on health-based 
+race_5yr_healthbased <- race_viol_breakdown %>%
+  select(poc_bin, health_5yr, race) %>%
+  pivot_wider(., names_from = race, values_from = health_5yr)
 
 # Overall summary: 
 # - Texas is pretty segregated - % white alone is generally greater than 75%, 
 #   and very little mixing between white and other races (i.e., the spread of 
 #   races looks parabolic)
-# - The second most common race is black and mixed races. 
-# - Qualitatively, it seems like violations might not be tied to race - 
-#   both pwids with high or low %POC also appears to have similar chance of 
-#   having health-based violations 
+
+# - White alone: most fall into the 70-90% white category. Mean health-based 
+#   viols over the past 10 years increase as % white increases, but this is also 
+#   because there are more utilities that fall within this category. 
+#   Same trend is also found with 5-yr health-based violations
+
+# - Black alone: most utilities fall within the 0-10% black. Mean health-based
+#   violations over the past 10 years are highest from 0-20% black communities
+#   but also peaks around 30-40% and 70-80% (but this n = 1). 
+
+# - Asian alone: similar to findings above, average number of health-based 
+#   violations over the past 10 years are highest around 0-10% Asian, same 
+#   trend is found with 5-yr violations 
+
+# - Latino/Latina: 30-40% latino/latina communities have fairly high rate of 
+#   mean violations, but also larger peak around 0-20%, and 90-100%
+
+# - MHI - generally centered around ~60k - and also has a lot of health-based 
+#   violations that mirror this distribution 
 ```
 
 
 ## What are the education levels of those served? 
 ```{r}
 census <- demo$census
-# grabbing % of population wihout any schooling, and those with a prof
+# grabbing % of population without any schooling, and those with a prof
 # degree
 edu_level <- census %>%
   select(pwsid, estimate_no_school_per:estimate_prof_degree_per) %>%
   as.data.frame() %>%
   select(-geometry)
 
+# merging with analysis keys for main stats of interest: 
 analysis_keys <- keys$analysis_keys
 edu_level_analysis <- merge(edu_level, analysis_keys, by = "pwsid") 
 
 # what do these distributions look like?
-ggplot(edu_level_analysis, aes(x = estimate_no_school_per)) + 
-  geom_density(color = "red", fill = "red") + 
-  geom_density(aes(x = estimate_prof_degree_per), color = "darkred", 
-               fill = "darkred", alpha = 0.5)
+edu_level_analysis_long <- edu_level_analysis %>%
+  select(pwsid, estimate_no_school_per, estimate_prof_degree_per) %>%
+  pivot_longer(estimate_no_school_per:estimate_prof_degree_per)
+ggplot(edu_level_analysis_long, aes(x = value, fill = name)) + 
+  geom_histogram() + 
+  theme_minimal()
+
+# grabbing a table to see how these relate to education levels: 
+edu_bin_stats <- seq(0, 20, by = 2)
+
+no_school <- edu_level_analysis %>%
+    as.data.frame() %>%
+    select(-geometry) %>%
+    mutate(edu_bin = cut(estimate_no_school_per, edu_bin_stats)) %>%
+    group_by(edu_bin) %>%
+    summarize(total_utilities = n(),
+              paperwork_10yr = mean(paperwork_violations_10yr), 
+              paperwork_5yr = mean(paperwork_violations_5yr), 
+              health_10yr = mean(healthbased_violations_10yr), 
+              health_5yr = mean(healthbased_violations_5yr)) %>%
+  mutate(edu_level = "no_school")
+  
+prof <- edu_level_analysis %>%
+    as.data.frame() %>%
+    select(-geometry) %>%
+    mutate(edu_bin = cut(estimate_prof_degree_per, edu_bin_stats)) %>%
+    group_by(edu_bin) %>%
+    summarize(total_utilities = n(),
+              paperwork_10yr = mean(paperwork_violations_10yr), 
+              paperwork_5yr = mean(paperwork_violations_5yr), 
+              health_10yr = mean(healthbased_violations_10yr), 
+              health_5yr = mean(healthbased_violations_5yr)) %>%
+  mutate(edu_level = "prof_degree")
+
+edu_summaries <- rbind(prof, no_school)
+
+# basic stats: 
+edu_level_analysis %>%
+  filter(estimate_no_school_per >= 5) %>%
+  count()
+edu_level_analysis %>%
+  filter(estimate_prof_degree_per >= 5) %>%
+  count()
 
 # how does no schooling relate to violations??
 ggplot(edu_level_analysis, aes(x = estimate_no_school_per, 
@@ -120,46 +211,14 @@ mhi_school <- edu_level_analysis %>%
 ggplot(mhi_school, aes(x = value, y = estimate_mhi)) + 
   geom_point() + 
   facet_wrap(~name) + 
-  geom_smooth() + 
+  geom_smooth(color = "grey") + 
   geom_point(data = mhi_school %>% filter(healthbased_violations_10yr > 0), 
              color = "darkred") + 
   geom_point(data = mhi_school %>% filter(healthbased_violations_5yr > 0), 
-             color = "red")
-
-# how does this relate to violations? 
-viol_school <- edu_level_analysis %>%
-  pivot_longer(paperwork_violations_10yr:total_violations_5yr)
-ggplot(viol_school, aes(x = estimate_no_school_per, y = value)) + 
-  geom_point() + 
-  facet_wrap(~name, scales = "free") + 
-  geom_point(aes(x = estimate_prof_degree_per), color = "red", 
-             alpha = 0.5) + 
-  labs(x = "% Population Without Schooling (black points), and with a Prof Degree (red points)", 
-       y = "Number of Violations") + 
+             color = "red") + 
+  labs(x = "% Education Category", y = "Estimate MHI") + 
   theme_minimal()
-
-
-# how do violations relate to education level?
-summary_health_viol <- edu_level_analysis %>%
- group_by(estimate_no_school_per) %>%
-  summarize(mean_viol = mean(healthbased_violations_5yr, na.rm = TRUE))
-summary_health_viol_prof <- edu_level_analysis %>%
- group_by(estimate_prof_degree_per) %>%
-  summarize(mean_viol = mean(healthbased_violations_5yr, na.rm = TRUE))
-
-ggplot(summary_health_viol, aes(x = estimate_no_school_per, 
-                                y = mean_viol)) + 
-  geom_point() + 
-  geom_point(data = summary_health_viol_prof, aes(x = estimate_prof_degree_per, 
-                                                  y = mean_viol), color = "red")
-
-# basic stats: 
-edu_level_analysis %>%
-  filter(estimate_no_school_per >= 5) %>%
-  count()
-edu_level_analysis %>%
-  filter(estimate_prof_degree_per >= 5) %>%
-  count()
+# yay! the data make sense! 
 
 # Overall summary:
 # - As the % of people without schooling increases, MHI decreases
@@ -171,9 +230,102 @@ edu_level_analysis %>%
 # - 54 (1.2%) pwsids serve communities where >= 5% of the community has professional 
 #   degrees, and visually it appears that communities that are more educated
 #   have less health-based violations 
+# - Most pwsids fall within the 0-2% for both of these categories. Communities 
+#   with larger % no schooling population (0.01-4)% are served by utilities with 
+#   ~1 more mean health-based violation than communities where 0.01-4% have 
+#   professional degrees. Interestingly, the largest mean health-based violations 
+#   occurred in communities where 8-10% had professional degrees, but also only 
+#   15 pwsids fell within this category. A similar rise in health-based 
+#   violations was also discovered in communities with a similar % of 
+#   individuals without schooling. 
 ```
 
 ## What are the population density demographics of those served? 
+```{r}
+sab_census <- demo$census
+pop_density <- sab_census %>%
+  select(pwsid, pop_density) %>%
+  as.data.frame() %>%
+  select(-geometry)
+
+analysis_keys <- keys$analysis_keys
+pop_density_analysis <- merge(pop_density, analysis_keys, by = "pwsid") 
+
+# NOTE: there's one pwsid with a huge population density - might be a 
+# mistake? Removing it for now 
+# pop_density_analysis <- pop_density_analysis %>%
+#   filter(pop_density != 9346644)
+
+# plot to see where we're at: 
+ggplot(pop_density_analysis, aes(x = pop_density)) + 
+  geom_histogram()
+
+# plots to investigate relationships between pop density and 
+# other metrics - filtering to capture trends at most sabs: 
+# how does pop density relate to % POC? 
+ggplot(pop_density_analysis %>% filter(pop_density < 2500000), 
+       aes(x = pop_density, 
+           y = estimate_poc_alone_per)) + 
+  geom_point() + 
+  geom_smooth(color = "grey")+
+  geom_point(data = pop_density_analysis %>% 
+               filter(healthbased_violations_5yr > 0 & pop_density < 2500000), 
+             color = "red") +
+  geom_smooth(data = pop_density_analysis %>% 
+                filter(healthbased_violations_5yr > 0 & pop_density < 2500000), 
+             color = "red") +
+  theme_minimal()
+
+# how does pop density relate to MHI?? 
+ggplot(pop_density_analysis %>% filter(pop_density < 150000), 
+       aes(x = pop_density, 
+           y = estimate_mhi)) + 
+  geom_point() + 
+  geom_smooth(color = "grey")+
+  geom_point(data = pop_density_analysis %>% 
+               filter(healthbased_violations_5yr > 0 & pop_density < 150000), 
+             color = "red") +
+  geom_smooth(data = pop_density_analysis %>% 
+                filter(healthbased_violations_5yr > 0 & pop_density < 150000), 
+             color = "red") + 
+  theme_minimal()
+
+# what about health-based violations by itself?
+# ggplot(pop_density_analysis %>% filter(pop_density < 150000), 
+#        aes(x = pop_density, 
+#            y = healthbased_violations_5yr)) + 
+#   geom_point() 
+
+pop_density_analysis %>%
+  filter(pop_density > 2500000) %>%
+  count()
+
+# checking out binned values
+pop_density_bins <- c(0, 200, 500, 10000, 50000, 100000, 
+                      150000, 200000, 300000, 9346644)
+pop_density_analysis %>%
+    as.data.frame() %>%
+    select(-geometry) %>%
+    mutate(pop_density_bin = cut(pop_density, pop_density_bins)) %>%
+    group_by(pop_density_bin) %>%
+    summarize(total_utilities = n(),
+              paperwork_10yr = mean(paperwork_violations_10yr), 
+              paperwork_5yr = mean(paperwork_violations_5yr), 
+              health_10yr = mean(healthbased_violations_10yr), 
+              health_5yr = mean(healthbased_violations_5yr)) 
+
+# Overall findings: 
+# - Most utilities have a population density of 0-50,000
+# - utilities with a population density between 0-10,000 and between 
+#   100000 - 150000 have the highest mean health-based violations over 
+#   the past 5 years, and similar trends are found if you look over the past 
+#   ten years. 
+# - broadly speaking - mean health-based violations are highest for systems 
+#   that serve communities with small population densities - so more 
+#   rural systems. 
+# - Mean paperwork violations over the past 5 and ten years are highest for utilities
+#   with a population density between 100000-200000 
+```
 
 ## What languages are spoken by those served?
 ```{r}
@@ -188,24 +340,55 @@ analysis_keys <- keys$analysis_keys
 lang_analysis <- merge(lang, analysis_keys, by = "pwsid") 
 
 # plot to see where we're at: 
-ggplot(lang_analysis, aes(x = estimate_only_english_per)) + 
+lang_analysis_long <- pivot_longer(lang_analysis, 
+                                   cols = c("estimate_only_english_per", 
+                                   "estimate_other_lang_per"))
+ggplot(lang_analysis,
+       aes(x = estimate_only_english_per)) +
   geom_histogram()
 
 # plots to investigate relationships between language spoken at home and 
-# other metrics: 
+# other metrics - basically confirming stuff we already know: 
+# how does this compare to % POC?
 ggplot(lang_analysis, aes(x = estimate_only_english_per, 
                           y = estimate_poc_alone_per)) + 
   geom_point() + 
-  geom_smooth()
+  geom_smooth(color = "grey") + 
+  theme_minimal() +
+  geom_point(data = lang_analysis %>% filter(healthbased_violations_5yr>0), 
+             color = "red") +
+  geom_smooth(data = lang_analysis %>% filter(healthbased_violations_5yr>0), 
+             color = "red") 
 
+# language and mhi
 ggplot(lang_analysis, aes(x = estimate_only_english_per, 
                           y = estimate_mhi)) + 
   geom_point() + 
-  geom_smooth()
+  geom_smooth(color = "grey") + 
+  theme_minimal() +
+  geom_point(data = lang_analysis %>% filter(healthbased_violations_5yr>0), 
+             color = "red") +
+  geom_smooth(data = lang_analysis %>% filter(healthbased_violations_5yr>0), 
+             color = "red") 
 
+# how does language relate to health-based viols:
 ggplot(lang_analysis, aes(x = estimate_only_english_per, 
                           y = healthbased_violations_5yr)) + 
-  geom_point() 
+  geom_point() + 
+  geom_smooth(color = "grey") + 
+  theme_minimal()
+
+# checking out binned results in table form: 
+lang_analysis %>%
+    as.data.frame() %>%
+    select(-geometry) %>%
+    mutate(lang_bin = cut(estimate_only_english_per, seq(0, 100, by = 10))) %>%
+    group_by(lang_bin) %>%
+    summarize(total_utilities = n(),
+              paperwork_10yr = mean(paperwork_violations_10yr), 
+              paperwork_5yr = mean(paperwork_violations_5yr), 
+              health_10yr = mean(healthbased_violations_10yr), 
+              health_5yr = mean(healthbased_violations_5yr)) 
 
 # quick stats: 
 lang_analysis %>%
@@ -214,13 +397,19 @@ lang_analysis %>%
 
 # Overall findings 
 #   - to no surprise, the higher % that speak English at home, the lower the 
-#     % POC. 
-#   - as the percentage of people that speak English at home increases, the 
+#     % POC. Based on the trends, it also appears that systems with health-based  
+#     violations are concentrated around systems that serve communities where 
+#     >= 75% of the community speaks only English. 
+#   - as the percentage of people that speak only English at home increases, the 
 #     MHI increases 
 #   - 78.8% of sabs serve communities where >= 60% of people speak only English 
-#   - as the % that speak only English increases, the number of health-based 
-#     violations increase, but that might be an artifact of the fact there's 
-#     more utilities that serve only English speaking households 
+#   - When a utility serves populations where 0-10% of the community speaks 
+#     only english, the average number of health-based violations is highest 
+#     by about 1. Another peak is found around communities where 40-50% speak 
+#     only English, and generally any communties that serve communities where 
+#     more than 60% of the community speaks only English, but that might again 
+#     be an artifact since there are more utilities that fall into this 
+#     category. 
 ```
 
 ## What nationality/immigration status reflect those seved? 
@@ -232,30 +421,60 @@ immi_status <- census %>%
   as.data.frame() %>%
   select(-geometry)
 
+# checking out what the distribution looks like: 
 ggplot(immi_status, aes(x = estimate_foreign_per)) + 
   geom_histogram()
-
-immi_status %>%
-  filter(estimate_foreign_per <= 20) %>%
-  count()
 
 # how does immigration status relate to poc, mhi, and sdwis violations: 
 analysis_keys <- keys$analysis_keys
 immi_analysis <- merge(immi_status, analysis_keys, by = "pwsid") 
 
+# logically, as % POC increases, % immigrant status increases 
 ggplot(immi_analysis, aes(x = estimate_foreign_per, 
                           y = estimate_poc_alone_per)) + 
   geom_point() + 
-  geom_smooth()
+  geom_smooth() + 
+  geom_smooth(color = "grey") + 
+  theme_minimal() +
+  geom_point(data = immi_analysis %>% filter(healthbased_violations_5yr>0), 
+             color = "red") +
+  geom_smooth(data = immi_analysis %>% filter(healthbased_violations_5yr>0), 
+             color = "red") 
 
+# how does immigrant status relate to mhi?
 ggplot(immi_analysis, aes(x = estimate_foreign_per, 
                           y = estimate_mhi)) + 
   geom_point() + 
-  geom_smooth()
+  geom_smooth() + 
+  geom_smooth(color = "grey") + 
+  theme_minimal() +
+  geom_point(data = immi_analysis %>% filter(healthbased_violations_5yr>0), 
+             color = "red") +
+  geom_smooth(data = immi_analysis %>% filter(healthbased_violations_5yr>0), 
+             color = "red") 
 
+# how does immigrant status relate to health-based violations? 
 ggplot(immi_analysis, aes(x = estimate_foreign_per, 
                           y = healthbased_violations_5yr)) + 
-  geom_point() 
+  geom_point() + 
+  geom_smooth(color = "grey") + 
+  theme_minimal() +
+  geom_point(data = immi_analysis %>% filter(healthbased_violations_5yr>0), 
+             color = "red") +
+  geom_smooth(data = immi_analysis %>% filter(healthbased_violations_5yr>0), 
+             color = "red") 
+
+# checking out binned results in table form: 
+immi_analysis %>%
+    as.data.frame() %>%
+    select(-geometry) %>%
+    mutate(immi_bin = cut(estimate_foreign_per, seq(0, 100, by = 10))) %>%
+    group_by(immi_bin) %>%
+    summarize(total_utilities = n(),
+              paperwork_10yr = mean(paperwork_violations_10yr), 
+              paperwork_5yr = mean(paperwork_violations_5yr), 
+              health_10yr = mean(healthbased_violations_10yr), 
+              health_5yr = mean(healthbased_violations_5yr)) 
 
 # Overall findings: 
 # - 83.14% of pwsids serve communities where less than 20% immigrated from a 
@@ -263,13 +482,113 @@ ggplot(immi_analysis, aes(x = estimate_foreign_per,
 # - to no surprise, pwsids with larger % immigrant status also have 
 #   higher % POC - this is a pretty strong relationship. 
 # - pwsids with larger % immigrant populations generally have smaller MHI, 
-#   but this correlation is pretty weak 
+#   but this correlation is pretty weak. When looking pwsids with health-
+#   based violations over the past 5 years, they tend to have lower MHI
+#   and smaller % population that are immigrants. 
 # - pwsids with <= 20% of the community of immigrant status generally have 
-#   more health-based violations over the past 5 years, but hat might 
-#   be due to the fact there are more pwsids that fall into this category. 
+#   more health-based violations over the past 5 (and particularily 10) years, 
+#   but that might be due to the fact there are more pwsids that fall into 
+#   this category. Paperwork violations also tend to be higher with utilities 
+#   that serve communities where small % of the community is from out of the 
+#   county. 
 ```
 
 ## How affordable is the water? 
+```{r}
+# NOTE: the water affordability data is NOT comprehensive - only has ~706 
+# unique pwsids 
+aff <- fin$TX_affordability_DAC %>%
+  as.data.frame() %>%
+  select(-c(geometry, estimate_mhi))
+
+# how does hcf  relate to poc, mhi, and sdwis violations: 
+analysis_keys <- keys$analysis_keys
+aff_analysis <- merge(aff, analysis_keys, by = "pwsid") 
+
+# how does household cost factor relate to %POC?
+ggplot(aff_analysis, aes(x = hcf, 
+                          y = estimate_poc_alone_per)) + 
+  geom_point() + 
+  geom_smooth() + 
+  geom_smooth(color = "grey") + 
+  theme_minimal() +
+  geom_point(data = aff_analysis %>% filter(healthbased_violations_5yr>0), 
+             color = "red") +
+  geom_smooth(data = aff_analysis %>% filter(healthbased_violations_5yr>0), 
+             color = "red") 
+
+# how does household cost factor relate to MHI?
+# that ~makes sense~ since mhi was used to calculate MHI - this graph 
+# might be useless 
+# ggplot(aff_analysis, aes(x = hcf, 
+#                           y = estimate_mhi)) + 
+#   geom_point() + 
+#   geom_smooth() + 
+#   geom_smooth(color = "grey") + 
+#   theme_minimal() +
+#   geom_point(data = aff_analysis %>% filter(healthbased_violations_5yr>0), 
+#              color = "red") +
+#   geom_smooth(data = aff_analysis %>% filter(healthbased_violations_5yr>0), 
+#              color = "red") 
+
+# how does hcf relate to health-based violations? 
+ggplot(aff_analysis, aes(x = hcf, 
+                          y = healthbased_violations_5yr)) + 
+  geom_point() + 
+  geom_smooth(color = "grey") + 
+  theme_minimal() +
+  geom_point(data = aff_analysis %>% filter(healthbased_violations_5yr>0), 
+             color = "red") +
+  geom_smooth(data = aff_analysis %>% filter(healthbased_violations_5yr>0), 
+             color = "red") 
+
+# checking out binned results in table form: 
+aff_analysis %>%
+    as.data.frame() %>%
+    select(-geometry) %>%
+    mutate(aff_bin = cut(hcf, c(0, 0.01, 0.02, 0.03, 0.04, 0.05))) %>%
+    group_by(aff_bin) %>%
+    summarize(total_utilities = n(),
+              paperwork_10yr = mean(paperwork_violations_10yr), 
+              paperwork_5yr = mean(paperwork_violations_5yr), 
+              health_10yr = mean(healthbased_violations_10yr), 
+              health_5yr = mean(healthbased_violations_5yr)) 
+
+# gotta map this: 
+aff_analysis_sf <- aff_analysis %>%
+  st_as_sf() %>%
+  st_transform(., crs = st_crs(demo$census))
+
+hcf_pal <- colorNumeric(
+  palette = viridis::mako(9),
+  domain = aff_analysis_sf$hcf)
+
+leaflet() %>%
+  addProviderTiles(providers$CartoDB.VoyagerNoLabels, group = "Toner Lite") %>%
+  addPolygons(data = aff_analysis_sf,
+              opacity = 9,
+              color = ~hcf_pal(hcf),
+              weight = 1,
+              label = paste0("pwsid: ", cvi_weighted_geoms$pwsid,
+                "; hcf: ", round(aff_analysis_sf$hcf, 2))) %>%
+  addLegend("bottomright",
+            pal = hcf_pal,
+            values = aff_analysis_sf$hcf,
+            title = "hcf",
+            opacity = 1)
+
+# Overall findings: 
+# - utilities that serve communities where the water is less affordable 
+#   (hcf > 0.02), have strikingly higher mean health-based violations 
+#   over the past 5 and 10 years. Mean values are particularly high 
+#   between 0.02-0.03 but that might be due to the outlier that had 
+#   ~182 (!!!!!) health-based violations over the past five years. 
+# - when plotting the data spatially, large cities generally 
+#   have low hcf, but rural communities have higher hcf. 
+```
 
 # Rabbit holes: 
-#   - deeper dive into education categories - basically just have no schooling and prof degrees at the moment
+#   - deeper dive into education categories - basically just have no schooling 
+#     and prof degrees at the moment
+#   - investigate relationship between hcf (water affordability), and population 
+#     density. Based on the map, I have an inkling that they may be related. 
