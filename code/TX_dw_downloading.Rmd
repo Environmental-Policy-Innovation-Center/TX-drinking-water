@@ -171,42 +171,29 @@ sab_tidy <- all_tx_sabs
 sab_census <- merge(sab_tidy, as.data.frame(sab_census), 
                     by = "pwsid", all.x = T)
 
-
 # creating a flag for when the county is within East TX: 
-# TODO: wrap up this flag once we determine how to handle 
-# sabs along the border 
-
-# east_tx <- read.csv("./data/raw/east_TX_counties.csv") %>%
-#   select(-X) %>%
-#   mutate(county_tidy = paste0(county_name, " County"))
-# # running an intersection with east texas geography 
-# east_tx_geo <- census_tidy %>%
-#   filter(counties %in% east_tx$county_tidy) %>%
-#   filter(state == "Texas") %>%
-#   st_union()
-# east_tx_sabs <- st_intersection(sab_census, east_tx_geo)
-# 
-# sab_census_test <- sab_census %>%
-#   mutate(east_tx_flag = case_when(
-#     pwsid %in% east_tx_sabs$pwsid ~ "yes", 
-#     TRUE ~ "no"
-#   ))
-# east_tx_sab_all <- sab_census %>% 
-#   filter(pwsid %in% east_tx_sabs$pwsid)
-
-# leaflet() %>%
-#   addProviderTiles(providers$CartoDB.VoyagerNoLabels, 
-#                    group = "Toner Lite") %>%
-#   addPolygons(data = east_tx_geo,
-#               opacity = 9) %>%
-#   addPolygons(data = sab_census_test %>% filter(east_tx_flag == "yes"),
-#               opacity = 9, color = "red") %>%
-#   addPolygons(data = sab_census_test %>% filter(east_tx_flag == "no"),
-#               opacity = 9, color = "black")
+# TODO: ask funders which pwsids they care about - some were captured in the 
+# intersection but others are fairly close to the border 
+east_tx <- read.csv("./data/raw/east_TX_counties.csv") %>%
+  select(-X) %>%
+  mutate(county_tidy = paste0(county_name, " County"))
+# running an intersection with east TX geography
+east_tx_geo <- census_tidy %>%
+  filter(counties %in% east_tx$county_tidy) %>%
+  filter(state == "Texas") %>%
+  st_union()
+east_tx_sabs <- st_intersection(sab_census, east_tx_geo)
+east_tx_pwsids <- unique(east_tx_sabs$pwsid)
+# creating flag: 
+sab_census_flag <- sab_census %>%
+  mutate(east_tx_flag = case_when(pwsid %in% east_tx_pwsids ~ "yes",
+                                  TRUE ~ "no")
+         ) %>%
+  relocate(east_tx_flag, .after = "county_served")
 
 # SAB & Census - writing this to s3: 
 tmp <- tempfile()
-st_write(sab_census, dsn = paste0(tmp, ".geojson"))
+st_write(sab_census_flag, dsn = paste0(tmp, ".geojson"))
 on.exit(unlink(tmp))
 put_object(
   file = paste0(tmp, ".geojson"),

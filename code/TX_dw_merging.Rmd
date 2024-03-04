@@ -491,7 +491,7 @@ well_gw_merge <- gw_wells %>%
 # also want a key for variables included in most analyses, such as MHI, 
 # %POC, and violations (5yr and 10yr) - paperwork and health-based
 census_keys <- demo$census %>%
-  select("pwsid", "estimate_mhi", "estimate_poc_alone_per")
+  select("pwsid", "east_tx_flag", "estimate_mhi", "estimate_poc_alone_per")
 
 # grabbing sdiws violations, pwsids, and year
 sdwis <- wds$sdwis
@@ -540,11 +540,6 @@ analysis_keys <- analysis_keys %>%
   mutate(across(paperwork_violations_10yr:total_violations_5yr, ~replace_na(.,0)))
 # NOTE: NAs in census columns indicate they're missing from the tract crosswalk
 # if they're missing JUST the mhi column, that stat was NA in the census. 
-
-leaflet() %>%
-  addProviderTiles(providers$CartoDB.VoyagerNoLabels, group = "Toner Lite") %>%
-  addPolygons(data = analysis_keys,
-              opacity = 9)
 
 # adding this to a larger list: 
 TX_merging_keys <- list()
