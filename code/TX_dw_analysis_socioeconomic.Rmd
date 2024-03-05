@@ -486,7 +486,7 @@ immi_analysis %>%
 #   based violations over the past 5 years, they tend to have lower MHI
 #   and smaller % population that are immigrants. 
 # - pwsids with <= 20% of the community of immigrant status generally have 
-#   more health-based violations over the past 5 (and particularily 10) years, 
+#   more health-based violations over the past 5 (and particularly 10) years, 
 #   but that might be due to the fact there are more pwsids that fall into 
 #   this category. Paperwork violations also tend to be higher with utilities 
 #   that serve communities where small % of the community is from out of the 

@@ -44,12 +44,141 @@ crosswalk <- aws.s3::s3read_using(read.csv,
 
 ## Does the system have adequate water supply?
 ```{r}
-# not as important for E TX deliverable not but state-wide analysis 
-# mine to 2050 
+# NOTE - there MIGHT be some pwsid & names we can link together based on 
+# entity names, but would require some fuzzy name matching (again)
 
+# TODO: make a analysis key for county-level stats for comparisons with county 
+# MHI, % POC, etc. 
+
+# comprehensive report here: https://www.twdb.texas.gov/waterplanning/swp/2022/docs/SWP22-Water-For-Texas.pdf?d=126542.70000004768
+
+# projected values to 2070 - values are in acre-feet/year
+proj_pop <- wds$TXSWP_pop
+proj_dem <- wds$TXSWP_demands
+proj_supp <- wds$TXSWP_supp
+# needs also = potential shortages
+proj_needs <- wds$TXSWP_needs
+# not entirely sure how to incorporate strategies just yet 
+proj_strat <- wds$TXSWP_strat
+
+# checking out projected population change for each county: 
+pop <- proj_pop %>%
+  select(wug_county, wug_type, p2020:p2070) %>% 
+  filter(wug_type == "MUNICIPAL") %>%
+  group_by(wug_county) %>%
+  summarize(p2020 = sum(p2020),
+            p2030 = sum(p2030), 
+            p2040 = sum(p2040), 
+            p2050 = sum(p2050), 
+            p2060 = sum(p2060), 
+            p2070 = sum(p2070)) %>%
+  mutate(pop_change = p2070 - p2020)
+# gotta map this - grabbing census county geographies
+census <- tidycensus::get_acs(
+  geography = "county", 
+  variables = c(total_pop = "B01003_001"), 
+  state = c("TX"), 
+  year = 2021,
+  geometry = TRUE
+)
+# adding counties: 
+census_tidy <- census
+counties <- unlist(strsplit(census_tidy$NAME, split = ","))
+census_tidy$counties <- trimws(counties[grepl("County", counties)])
+counties <- census_tidy %>% 
+  group_by(counties) %>% 
+  mutate(county_geo = st_union(geometry)) %>%
+  select(counties) %>%
+  mutate(counties = toupper(counties), 
+         counties = gsub(" COUNTY", "", counties)) %>%
+  rename(wug_county = counties)
+
+# combining with pop trends: 
+pop_sf <- pop %>%
+  left_join(counties) %>%
+  st_as_sf() %>%
+  st_transform(., st_crs(census))
+
+# plotting to see projected population change by county: 
+pop_pal <- colorBin(
+  palette = viridis::viridis(10),
+  bins = c(0, 100, 500, 1000, 50000, 100000, 500000, 1000000, 1564476))
+
+leaflet() %>%
+  addProviderTiles(providers$CartoDB.VoyagerNoLabels,
+                   group = "Toner Lite") %>%
+  addPolygons(data = pop_sf,
+              opacity = 9,
+              color = ~pop_pal(pop_change),
+              weight = 1,
+              label = paste0("county: ", pop_sf$wug_county,
+                "; pop change: ", pop_sf$pop_change)) %>%
+  addLegend("bottomright",
+            pal = pop_pal,
+            values = c(0, 100, 500, 1000, 50000, 100000, 500000, 1000000, 1564476),
+            title = "pop change",
+            opacity = 1)
+
+# Combining demand, supplies, and needs stats 
+dem <- proj_dem %>%
+  select(wug_county, entity_name, wug_type, d2020:d2070) %>%
+  pivot_longer(d2020:d2070) %>%
+  mutate(name = gsub("d", "", name)) %>%
+  rename(decade = name, 
+         demands = value)
+
+sup <- proj_supp %>%
+  select(wug_county, entity_name, wug_type, ws2020:ws2070) %>%
+  pivot_longer(ws2020:ws2070) %>%
+  mutate(name = gsub("ws", "", name)) %>%
+  rename(decade = name, 
+         supplies = value)
+
+needs <- proj_needs %>%
+  select(wug_county, entity_name, wug_type, n2020:n2070) %>%
+  pivot_longer(n2020:n2070) %>%
+  mutate(name = gsub("n", "", name)) %>%
+  rename(decade = name, 
+         needs = value)
+
+# grabbing summaries to understand demand, supplies, and projected needs: 
+dem_summ <- dem %>%
+  group_by(wug_type, decade) %>%
+  summarize(sum_dem = sum(demands))
+sup_summ <- sup %>%
+  group_by(wug_type, decade) %>%
+  summarize(sum_sup = sum(supplies))
+needs_summ <- needs %>%
+  group_by(wug_type, decade) %>%
+  summarize(sum_need = sum(needs))
+
+swp <- merge(dem_summ, sup_summ)
+swp <- merge(swp, needs_summ)
+swp_long <- swp %>%
+  pivot_longer(sum_dem:sum_need)
+
+ggplot(swp_long, aes(x = decade, y = value, group = name, 
+                       color = name)) + 
+  geom_point() + 
+  geom_smooth(se = FALSE) +
+  facet_wrap(~wug_type) + 
+  theme_minimal() 
+
+# Overall findings: 
+#   - Out of all six possible water use types, municipal has the largest
+#     increase in projected needs from 2020 - 2070
+#   - Largest projected population increases are mostly near cities 
+#     which is expected. Harris, Collin, and Montgomery have the largest 
+#     projected population increases. 
+#   - for both irrigation and municipal water categories, the demand 
+#     largely outweighs water supplies (aside from 2020 in the municipal 
+#     category)
+
+# notes from sync with Charles: 
+# not as important for E TX deliverable but state-wide analysis 
+# mine to 2050 
 # demand calculations are not always easy due to tech advancements - take 
 # it with a grain of salt 
-
 # we can't assume boundaries with aquifers - but we don't really have a choice 
 # https://iopscience.iop.org/article/10.1088/1748-9326/ab0db7/meta
 ```
@@ -71,30 +200,38 @@ viol_long %>%
   filter(value > 0) %>% 
   summarize(total = length(unique(pwsid)))
 
-ggplot(viol_long, aes(x = estimate_poc_alone_per, y = value, color = name)) + 
-  geom_point() + 
+# checking out trends with healthbased viols over the past 5 years and 
+# relationship to % POC and MHI
+ggplot(viols, aes(x = estimate_poc_alone_per, y = estimate_mhi)) + 
+  geom_point() +
+  geom_point(data = viols %>% filter(healthbased_violations_5yr > 0), 
+             color = "red")
+
+# grabbing stats for 5yr health-based violation bins: 
+viols %>%
+    as.data.frame() %>%
+    select(-geometry) %>%
+    mutate(viol_bin = cut(healthbased_violations_5yr, 7)) %>%
+    group_by(viol_bin) %>%
+    summarize(total_utilities = n(),
+              mean_mhi = mean(estimate_mhi, na.rm = T), 
+              mean_poc = mean(estimate_poc_alone_per, na.rm = T))
+
+# what about all of the other categories of violations? 
+ggplot(viol_long, aes(x = estimate_poc_alone_per, y = value, color = name)) +
+  geom_point() +
   facet_wrap(~name, scales = "free") +
-  theme_bw() + 
+  theme_bw() +
   theme(legend.position = "none") +
-  labs(x = "% POC", y = "Number of Violations") + 
+  labs(x = "% POC", y = "Number of Violations") +
   ggtitle("SDWIS Violations By % POC")
 
-ggplot(viol_long, aes(x = estimate_mhi, y = value, color = name)) + 
-  geom_point() + 
+ggplot(viol_long, aes(x = estimate_mhi, y = value, color = name)) +
+  geom_point() +
   facet_wrap(~name, scales = "free") +
-  theme_bw() + 
-  labs(x = "MHI", y = "Number of Violations") + 
+  theme_bw() +
+  labs(x = "MHI", y = "Number of Violations") +
   ggtitle("SDWIS Violations By Median Household Income")
-
-# also interested in the type of violation: 
-# viol_types <- sdwis %>%
-#   group_by(pwsid, viol_year, violation_category_code) %>%
-#   tally()
-# # from: https://enviro.epa.gov/enviro/EF_METADATA_HTML.sdwis_page?p_column_name=VIOLATION_CATEGORY_CODE
-# # Other, MON, RPT (?), MR (monitoring and reporting), 
-# # TT (treatment technique), MCL (max contaminant level), and 
-# # MRDL (max residual disinfectant)
-# unique(viol_types$violation_category_code)
 
 
 # Quick Summary: 
@@ -105,13 +242,15 @@ ggplot(viol_long, aes(x = estimate_mhi, y = value, color = name)) +
 #   - 2673 have had paperwork violations over the past 5 years (58.85)
 #   - 3637 have had paperwork violations over the past 10 years (80.07%)
 # 
-# If your median household income is less than $100,000, you're much more likely 
-# to receive water from a system that had a health-based violation over the 
-# past 5 years.
+#   Qualitatively, if your mHI is < 100,000 and % POC is < 30%, you're more
+#   likely to have more health-based violations over the past 5 years. 
 # 
-# Interestingly, if your community has <30% POC, you're more likely to have a
-# health-based violation over the past 5 and 10 years... but that might just be
-# because more systems have small %POC
+#   When looking at bins of health-based violations over the past 5 years, 
+#   most utilities (4484) have less than 25 violations. As the number of 
+#   violation increase the MHI decreases. % POC is highest at low levels of 
+#   health-based violations, but that might be because the total number of
+#   utilities that fall within this category is higher. Utilities with lots of 
+#   violations generally have a %POC population greater than 20%. 
 ```
 
 ## How many boil water notices have there been over the past five years?

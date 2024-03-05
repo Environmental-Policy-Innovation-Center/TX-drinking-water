@@ -20,6 +20,7 @@ library(readxl)
 library(jsonlite)
 library(googlesheets4)
 library(googledrive)
+library(rvest)
 # remotes::install_github("environmental-policy-innovation-center/stateDW", 
 #                         auth_token = "insert-github-pat-here")
 library(stateDW)
@@ -353,8 +354,30 @@ combined_viols <- rbind(viol_dec17, viol_dec3rd) %>%
 
 # TX SDWIS violations: 
 sdwis <- aws.s3::s3read_using(read.csv, 
-                                      object = "s3://tech-team-data/state-drinking-water/TX/raw/TX_sdwis.csv") %>%
+                              object = "s3://tech-team-data/state-drinking-water/TX/raw/TX_sdwis.csv") %>%
   select(-X)
+
+## TX water restrictions: https://www.tceq.texas.gov/drinkingwater/trot/droughtw.html
+# Pulled March 5 2024: 
+url <- "https://www.tceq.texas.gov/drinkingwater/trot/droughtw.html"
+# web scraping: 
+tx_water_limits_list <- url %>% 
+  read_html() %>% 
+  html_nodes("table") %>% 
+  html_table(fill = T) 
+# yanking out list
+tx_water_restrictions <- tx_water_limits_list[[1]] 
+# tidying and fixing pwsid column: 
+tx_water_restrictions <- tx_water_restrictions %>%
+  janitor::clean_names() %>%
+  rename(pwsid = pws_id) %>%
+  mutate(date_notified = as.Date(date_notified, tryFormats = c("%m/%d/%Y")))
+for(i in 1:nrow(tx_water_restrictions)){
+  tx_water_restrictions$pwsid[i] <- paste0("TX", paste(rep(0, (7-nchar(tx_water_restrictions$pwsid[i]))), 
+                                                        collapse = ""), 
+                                     tx_water_restrictions$pwsid[i], collapse = "")
+}
+
 
 # throwing this into a list: 
 TX_water_delivery <- list()
@@ -362,15 +385,17 @@ TX_water_delivery[[1]] <- sdwis
 TX_water_delivery[[2]] <- combined_viols
 TX_water_delivery[[3]] <- historic_use_estimates
 TX_water_delivery[[4]] <- waterloss_all
-TX_water_delivery[[5]] <- pop 
-TX_water_delivery[[6]] <- demands
-TX_water_delivery[[7]] <- supp
-TX_water_delivery[[8]] <- needs
-TX_water_delivery[[9]] <- strat
+TX_water_delivery[[5]] <- tx_water_restrictions
+TX_water_delivery[[6]] <- pop 
+TX_water_delivery[[7]] <- demands
+TX_water_delivery[[8]] <- supp
+TX_water_delivery[[9]] <- needs
+TX_water_delivery[[10]] <- strat
 
 names(TX_water_delivery) <- c("sdwis", "tceq_viols",
                               "historic_use_estimates",
-                              "water_loss", "TXSWP_pop", "TXSWP_demands",
+                              "water_loss", "water_restrictions",
+                              "TXSWP_pop", "TXSWP_demands",
                               "TXSWP_supp", "TXSWP_needs", "TXSWP_strat")
 
 saveRDS(TX_water_delivery, file="./data/raw/TX_water_delivery_list.RData")
@@ -393,14 +418,88 @@ put_object(
 # water_aff <- readxl::read_excel(temp_file) %>%
 #   janitor::clean_names()
 
-# PPL data & tidying 
-# TODO: Update this when Phil finishes scraping TX's PPL
-TX_PPL <- aws.s3::s3read_using(read.csv, 
-                               object = "s3://water-team-data/clean_data/srf_project_priority_lists/web_ppl_combined_clean.csv") %>%
-  mutate(across('Project.Type', 
-                str_replace, 'Other', 'General')) %>%
-  filter(State == "Texas") %>%
-  janitor::clean_names()
+# PPL data & tidying - commented out to replace the ppl14-24 years below: 
+# TX_PPL <- aws.s3::s3read_using(read.csv, 
+#                                object = "s3://water-team-data/clean_data/srf_project_priority_lists/web_ppl_combined_clean.csv") %>%
+#   mutate(across('Project.Type', 
+#                 str_replace, 'Other', 'General')) %>%
+#   filter(State == "Texas") %>%
+#   janitor::clean_names()
+
+# Combining and adding full ppl lists from SFY 14-24 
+# added March 5th 2024: 
+# rbinding SRF ppls on aws that Phil scraped: 
+ppl15 <- aws.s3::s3read_using(read.csv, 
+                              object = "s3://water-team-data/clean_data/srf_project_priority_lists/texas-dwsrf-ppls/tx-dw-sfy15-ppl-invited.csv") %>%
+  janitor::clean_names() %>%
+  rename(gpr = x, 
+         disadv = disadvantaged) %>%
+  mutate(sfy = "sfy15")
+
+ppl16 <- aws.s3::s3read_using(read.csv, 
+                              object = "s3://water-team-data/clean_data/srf_project_priority_lists/texas-dwsrf-ppls/tx-dw-sfy16-ppl-invited.csv") %>%
+  janitor::clean_names() %>%
+  mutate(sfy = "sfy16")
+
+ppl17 <- aws.s3::s3read_using(read.csv, 
+                              object = "s3://water-team-data/clean_data/srf_project_priority_lists/texas-dwsrf-ppls/tx-dw-sfy17-ppl-invited.csv") %>%
+  janitor::clean_names() %>%
+  mutate(sfy = "sfy17") %>%
+  rename(phase_s = eligible_phase_s)
+
+ppl15_17 <- rbind(ppl15, ppl16, ppl17)
+
+ppl19 <- aws.s3::s3read_using(read.csv, 
+                              object = "s3://water-team-data/clean_data/srf_project_priority_lists/texas-dwsrf-ppls/tx-dw-sfy19-ppl-invited.csv") %>%
+  janitor::clean_names() %>%
+  mutate(sfy = "sfy19") 
+
+ppl20 <- aws.s3::s3read_using(read.csv, 
+                              object = "s3://water-team-data/clean_data/srf_project_priority_lists/texas-dwsrf-ppls/tx-dw-sfy20-ppl-invited.csv") %>%
+  janitor::clean_names() %>%
+  mutate(sfy = "sfy20") %>%
+  rename(phase_s = eligible_phase_s)
+
+ppl21 <- aws.s3::s3read_using(read.csv, 
+                              object = "s3://water-team-data/clean_data/srf_project_priority_lists/texas-dwsrf-ppls/tx-dw-sfy21-ppl-invited.csv") %>%
+  janitor::clean_names() %>%
+  mutate(sfy = "sfy21") %>%
+  rename(phase_s = eligible_phase_s)
+
+# binding 15-21
+ppl15_21 <- rbind(ppl15_17, ppl19, ppl20, ppl21)
+
+ppl22 <- aws.s3::s3read_using(read.csv, 
+                              object = "s3://water-team-data/clean_data/srf_project_priority_lists/texas-dwsrf-ppls/tx-dw-sfy22-ppl-invited.csv") %>%
+  janitor::clean_names() %>%
+  mutate(sfy = "sfy22") 
+
+ppl23 <- aws.s3::s3read_using(read.csv, 
+                              object = "s3://water-team-data/clean_data/srf_project_priority_lists/texas-dwsrf-ppls/tx-dw-sfy23-ppl-invited.csv") %>%
+  janitor::clean_names() %>%
+  mutate(sfy = "sfy23") 
+
+ppl24 <- aws.s3::s3read_using(read.csv, 
+                              object = "s3://water-team-data/clean_data/srf_project_priority_lists/texas-dwsrf-ppls/tx-dw-sfy24-ppl-invited.csv") %>%
+  janitor::clean_names() %>%
+  mutate(sfy = "sfy24") %>%
+  rename(phase_s = eligible_phase_s)
+
+# binding 15-24
+ppl15_24 <- rbind(ppl15_21, ppl22, ppl23, ppl24)
+
+# adding ppl14 last since the columns are an odd order: 
+ppl14 <- aws.s3::s3read_using(read.csv, 
+                              object = "s3://water-team-data/clean_data/srf_project_priority_lists/texas-dwsrf-ppls/tx-dw-sfy14-ppl-invited.csv") %>%
+  janitor::clean_names() %>%
+  select(-estimated_construction_start) %>%
+  rename(disadv = disadvantaged) %>%
+  mutate(sfy = "sfy14")
+ppl14 <- ppl14[,names(ppl15_24)]
+
+# bringing it all together! 
+ppl14_24 <- rbind(ppl14, ppl15_24)
+
 
 ## Danielle's SRF analysis: had to download it using a different method because 
 # it's an excel file that's stored on google drive - so it's not actually a 
@@ -425,9 +524,9 @@ TX_DAC <- aws.s3::s3read_using(st_read,
 # throwing this into a list: 
 TX_financial <- list()
 TX_financial[[1]] <- TX_DAC
-TX_financial[[2]] <- TX_PPL
+TX_financial[[2]] <- ppl14_24
 TX_financial[[3]] <- cwsrf_by_rank
-names(TX_financial) <- c("TX_affordability_DAC", "TX_PPL",
+names(TX_financial) <- c("TX_affordability_DAC", "TX_PPL_SFY14_24",
                          "SRF_analysis")
 
 saveRDS(TX_financial, file="./data/raw/TX_financial_list.RData")
@@ -455,4 +554,4 @@ steps:
 data collection 
 - nixing cvi
 - incorporating CEJST specific metrics regarding whether disadv or not 
-- incorporate EJ screen (R package and then API) regarding water-specfic hazards 
+- incorporate EJ screen (R package and then API) regarding water-specific hazards 
