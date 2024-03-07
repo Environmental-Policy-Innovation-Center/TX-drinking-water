@@ -42,7 +42,8 @@ crosswalk <- aws.s3::s3read_using(read.csv,
 
 ## How have water utilities been funded historically? 
 ```{r}
-# hold for SRF data 
+ppl <- fin$TX_PPL_SFY14_24
+
 ```
 
 ## What races/ethnicities are served by what system? 
@@ -54,6 +55,11 @@ race_stats <- census %>%
   as.data.frame(.) %>%
   select(-geometry) 
 
+# grabbing summary stats: 
+colMeans(race_stats %>% select(-pwsid), na.rm = TRUE)
+summary(census)
+
+# long format for plotting: 
 race_long <- race_stats %>%
   pivot_longer(., estimate_white_alone_per:estimate_mhi)
 
@@ -61,8 +67,11 @@ race_long <- race_stats %>%
 ggplot(race_long, aes(x = value, color = name, fill = name)) + 
   geom_histogram() + 
   facet_wrap(~name, scales = "free") + 
-  theme_bw() +
-  theme(legend.position = "bottom")
+  theme_minimal() +
+  scale_color_discrete(name = "") + 
+  scale_fill_discrete(name = "") + 
+  theme(legend.position = "bottom") + 
+  labs(x = "Percent", y = "Count of PWSIDs") 
 
 # combining this info with violations: 
 analysis_keys <- keys$analysis_keys
@@ -112,7 +121,14 @@ race_viol_breakdown
 # just focusing on health-based 
 race_5yr_healthbased <- race_viol_breakdown %>%
   select(poc_bin, health_5yr, race) %>%
-  pivot_wider(., names_from = race, values_from = health_5yr)
+  pivot_wider(., names_from = race, values_from = health_5yr) 
+
+names(race_5yr_healthbased) <- c("%Race", "White_Viol", "Black_Viol", 
+                                 "AIAN_Viol", "Asian_Viol", "NAPI_Viol", 
+                                 "Other_Viol", "Mixed_Viol", "POC_Viol", 
+                                 "Hisp_Viol")
+
+race_5yr_healthbased
 
 # Overall summary: 
 # - Texas is pretty segregated - % white alone is generally greater than 75%, 
@@ -212,8 +228,8 @@ ggplot(mhi_school, aes(x = value, y = estimate_mhi)) +
   geom_point() + 
   facet_wrap(~name) + 
   geom_smooth(color = "grey") + 
-  geom_point(data = mhi_school %>% filter(healthbased_violations_10yr > 0), 
-             color = "darkred") + 
+  # geom_point(data = mhi_school %>% filter(healthbased_violations_10yr > 0), 
+  #            color = "darkred") + 
   geom_point(data = mhi_school %>% filter(healthbased_violations_5yr > 0), 
              color = "red") + 
   labs(x = "% Education Category", y = "Estimate MHI") + 
@@ -264,8 +280,8 @@ ggplot(pop_density_analysis, aes(x = pop_density)) +
 # other metrics - filtering to capture trends at most sabs: 
 # how does pop density relate to % POC? 
 ggplot(pop_density_analysis %>% filter(pop_density < 2500000), 
-       aes(x = pop_density, 
-           y = estimate_poc_alone_per)) + 
+       aes(x = estimate_poc_alone_per, 
+           y = pop_density)) + 
   geom_point() + 
   geom_smooth(color = "grey")+
   geom_point(data = pop_density_analysis %>% 
@@ -274,12 +290,13 @@ ggplot(pop_density_analysis %>% filter(pop_density < 2500000),
   geom_smooth(data = pop_density_analysis %>% 
                 filter(healthbased_violations_5yr > 0 & pop_density < 2500000), 
              color = "red") +
-  theme_minimal()
+  theme_minimal() + 
+  labs(x = "% POC", y = "Population Density")
 
 # how does pop density relate to MHI?? 
 ggplot(pop_density_analysis %>% filter(pop_density < 150000), 
-       aes(x = pop_density, 
-           y = estimate_mhi)) + 
+       aes(y = pop_density, 
+           x = estimate_mhi)) + 
   geom_point() + 
   geom_smooth(color = "grey")+
   geom_point(data = pop_density_analysis %>% 
@@ -288,7 +305,8 @@ ggplot(pop_density_analysis %>% filter(pop_density < 150000),
   geom_smooth(data = pop_density_analysis %>% 
                 filter(healthbased_violations_5yr > 0 & pop_density < 150000), 
              color = "red") + 
-  theme_minimal()
+  theme_minimal()+ 
+  labs(x = "Median Household Income", y = "Population Density")
 
 # what about health-based violations by itself?
 # ggplot(pop_density_analysis %>% filter(pop_density < 150000), 
@@ -358,7 +376,8 @@ ggplot(lang_analysis, aes(x = estimate_only_english_per,
   geom_point(data = lang_analysis %>% filter(healthbased_violations_5yr>0), 
              color = "red") +
   geom_smooth(data = lang_analysis %>% filter(healthbased_violations_5yr>0), 
-             color = "red") 
+             color = "red") + 
+  labs(x = "% Only Speak English", y = "% POC")
 
 # language and mhi
 ggplot(lang_analysis, aes(x = estimate_only_english_per, 
@@ -369,7 +388,8 @@ ggplot(lang_analysis, aes(x = estimate_only_english_per,
   geom_point(data = lang_analysis %>% filter(healthbased_violations_5yr>0), 
              color = "red") +
   geom_smooth(data = lang_analysis %>% filter(healthbased_violations_5yr>0), 
-             color = "red") 
+             color = "red") + 
+  labs(x = "% Only Speak English", y = "MHI")
 
 # how does language relate to health-based viols:
 ggplot(lang_analysis, aes(x = estimate_only_english_per, 
@@ -439,7 +459,8 @@ ggplot(immi_analysis, aes(x = estimate_foreign_per,
   geom_point(data = immi_analysis %>% filter(healthbased_violations_5yr>0), 
              color = "red") +
   geom_smooth(data = immi_analysis %>% filter(healthbased_violations_5yr>0), 
-             color = "red") 
+             color = "red") + 
+  labs(x = "% Immigrant Status", y = "%POC")
 
 # how does immigrant status relate to mhi?
 ggplot(immi_analysis, aes(x = estimate_foreign_per, 
@@ -451,7 +472,8 @@ ggplot(immi_analysis, aes(x = estimate_foreign_per,
   geom_point(data = immi_analysis %>% filter(healthbased_violations_5yr>0), 
              color = "red") +
   geom_smooth(data = immi_analysis %>% filter(healthbased_violations_5yr>0), 
-             color = "red") 
+             color = "red") + 
+  labs(x = "% Immigrant Status", y = "MHI")
 
 # how does immigrant status relate to health-based violations? 
 ggplot(immi_analysis, aes(x = estimate_foreign_per, 
@@ -515,7 +537,8 @@ ggplot(aff_analysis, aes(x = hcf,
   geom_point(data = aff_analysis %>% filter(healthbased_violations_5yr>0), 
              color = "red") +
   geom_smooth(data = aff_analysis %>% filter(healthbased_violations_5yr>0), 
-             color = "red") 
+             color = "red") + 
+  labs(x = "Household Cost Factor", y = "%POC")
 
 # how does household cost factor relate to MHI?
 # that ~makes sense~ since mhi was used to calculate MHI - this graph 
@@ -537,10 +560,11 @@ ggplot(aff_analysis, aes(x = hcf,
   geom_point() + 
   geom_smooth(color = "grey") + 
   theme_minimal() +
-  geom_point(data = aff_analysis %>% filter(healthbased_violations_5yr>0), 
-             color = "red") +
-  geom_smooth(data = aff_analysis %>% filter(healthbased_violations_5yr>0), 
-             color = "red") 
+  # geom_point(data = aff_analysis %>% filter(healthbased_violations_5yr>0), 
+  #            color = "red") +
+  # geom_smooth(data = aff_analysis %>% filter(healthbased_violations_5yr>0), 
+  #            color = "red") + 
+  labs(x = "Household Cost Factor", y = "Health-based Violations: 5 years")
 
 # checking out binned results in table form: 
 aff_analysis %>%
@@ -569,7 +593,7 @@ leaflet() %>%
               opacity = 9,
               color = ~hcf_pal(hcf),
               weight = 1,
-              label = paste0("pwsid: ", cvi_weighted_geoms$pwsid,
+              label = paste0("pwsid: ", aff_analysis_sf$pwsid,
                 "; hcf: ", round(aff_analysis_sf$hcf, 2))) %>%
   addLegend("bottomright",
             pal = hcf_pal,
@@ -587,8 +611,86 @@ leaflet() %>%
 #   have low hcf, but rural communities have higher hcf. 
 ```
 
-# Rabbit holes: 
-#   - deeper dive into education categories - basically just have no schooling 
-#     and prof degrees at the moment
-#   - investigate relationship between hcf (water affordability), and population 
-#     density. Based on the map, I have an inkling that they may be related. 
+## Bonus look at stats for cws in TX and comparisons across different scales: 
+```{r}
+# grabbing stats at different scales: 
+census <- demo$census
+east_tx_cws <- census %>%
+  filter(east_tx_flag == "yes")
+summary(east_tx_cws)
+
+# how does this compare to all of Texas?
+census_vars <- c(total_pop = "B01003_001",
+                 black_alone = "B02001_003", 
+                 asian_alone = "B02001_005", 
+                 white_alone = "B02001_002", 
+                 AIAN_alone = "B02001_004", 
+                 NAPI_alone = "B02001_006", 
+                 other_alone = "B02001_007", 
+                 mixed_alone = "B02001_008",
+                 hisp_alone = "B03003_003", 
+                 mhi = "B19013_001", 
+                 under_6  = "B23008_002", 
+                 over_65 = "B09021_022", 
+                 only_english = "B99162_002", 
+                 other_lang = "B99162_003", 
+                 no_school = "B15003_002", 
+                 prof_degree = "B15003_024", 
+                 foreign = "B99051_005", 
+                 pov_level_at_above_150 = "B06012_004")
+tx_census <- tidycensus::get_acs(
+  geography = "state", 
+  variables = census_vars, 
+  state = c("TX"), # also wanted to grab stats for Texarkana  
+  year = 2021,
+  geometry = TRUE
+)
+
+# stats for all of TX: 
+tx_wide <- pivot_wider(tx_census, 
+                           names_from = c("variable"), 
+                           values_from = c("estimate", "moe"))
+
+tx_wide <- tx_wide %>%
+  select(starts_with(c("estimate"))) %>%
+  # leaving out columns that are totals or mhi:
+  mutate_at(vars(!c("estimate_total_pop", "estimate_mhi")), 
+            ~((./estimate_total_pop)*100)) %>%
+  mutate(estimate_poc_alone = (100 - estimate_white_alone))
+
+
+# grabbing East TX stats: 
+etx_census <- tidycensus::get_acs(
+  geography = "county", 
+  variables = census_vars, 
+  state = c("TX"), # also wanted to grab stats for Texarkana  
+  year = 2021,
+  geometry = TRUE
+)
+
+counties <- unlist(strsplit(etx_census$NAME, split = ","))
+etx_census$counties <- trimws(counties[grepl("County", counties)])
+
+east_tx <- read.csv("./data/raw/east_TX_counties.csv") %>%
+  select(-X) %>%
+  mutate(county_tidy = paste0(county_name, " County"))
+# running an intersection with east TX geography
+east_tx_geo <- etx_census %>%
+  filter(counties %in% east_tx$county_tidy) 
+
+etx_wide <- pivot_wider(east_tx_geo, 
+                       names_from = c("variable"), 
+                       values_from = c("estimate", "moe"))
+
+etx_wide <- etx_wide %>%
+  select(starts_with(c("estimate"))) %>%
+  # leaving out columns that are totals or mhi:
+  mutate_at(vars(!c("estimate_total_pop", "estimate_mhi")), 
+            ~((./estimate_total_pop)*100)) %>%
+  mutate(estimate_poc_alone = (100 - estimate_white_alone))
+
+summary(etx_wide)
+```
+Rabbit holes: 
+ - deeper dive into education categories - basically just have no schooling and prof degrees at the moment
+- investigate relationship between hcf (water affordability), and population density. Based on the map, I have an inkling that they may be related. 

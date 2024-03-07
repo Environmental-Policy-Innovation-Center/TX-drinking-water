@@ -10,6 +10,7 @@ library(tidyverse)
 library(leaflet)
 library(sf)
 library(aws.s3)
+library(googledrive)
 ```
 
 ## Loading data lists 
@@ -164,12 +165,62 @@ ggplot(swp_long, aes(x = decade, y = value, group = name,
   facet_wrap(~wug_type) + 
   theme_minimal() 
 
+
+# what does the distribution of needs look like?
+needs_plot <- ggplot(needs, aes(x = decade, y = needs, 
+                                color = wug_county)) + 
+  geom_point() + 
+  facet_wrap(~wug_type, scales = "free") + 
+  theme_minimal() + 
+  theme(legend.position = "none")
+plotly::ggplotly(needs_plot)
+
+# what do municipal needs look like spatially?
+county_needs <- needs %>%
+  filter(wug_type == "MUNICIPAL") %>%
+  group_by(wug_county, decade) %>%
+  summarize(mean_needs = mean(needs)) %>%
+  pivot_wider(names_from = decade, values_from = mean_needs) %>%
+  mutate(net_needs = `2070` - `2020`) %>%
+  select(wug_county, net_needs) %>%
+  left_join(counties) %>%
+  st_as_sf() %>%
+  st_transform(., crs = st_crs(census))
+
+# plotting to see projected population change by county: 
+needs_pal <- colorNumeric(
+  palette = viridis::viridis(8),
+  domain = county_needs$net_needs)
+
+leaflet() %>%
+  addProviderTiles(providers$CartoDB.VoyagerNoLabels,
+                   group = "Toner Lite") %>%
+  addPolygons(data = county_needs,
+              opacity = 9,
+              color = ~needs_pal(net_needs),
+              weight = 1,
+              label = paste0("county: ", county_needs$wug_county,
+                "; net needs: ", round(county_needs$net_needs, 2))) %>%
+  addLegend("bottomright",
+            pal = needs_pal,
+            values = county_needs$net_needs,
+            title = "Net Needs",
+            opacity = 1)
+
 # Overall findings: 
 #   - Out of all six possible water use types, municipal has the largest
-#     increase in projected needs from 2020 - 2070
+#     increase in projected needs from 2020 - 2070. The county with the 
+#     largest overall municipal water needs is Harris (i.e., Houston), 
+#     followed by Tarrant and Dallas (both in Dallas-Fort Worth area). 
+# 
+#   - When mapping net needs (needs in 2070 - needs 2020), the county with the 
+#     largest net increase is Potter county, located near Amarillo. High net 
+#     needs are mostly found around cities. 
+# 
 #   - Largest projected population increases are mostly near cities 
 #     which is expected. Harris, Collin, and Montgomery have the largest 
 #     projected population increases. 
+# 
 #   - for both irrigation and municipal water categories, the demand 
 #     largely outweighs water supplies (aside from 2020 in the municipal 
 #     category)
@@ -249,8 +300,7 @@ ggplot(viol_long, aes(x = estimate_mhi, y = value, color = name)) +
 #   most utilities (4484) have less than 25 violations. As the number of 
 #   violation increase the MHI decreases. % POC is highest at low levels of 
 #   health-based violations, but that might be because the total number of
-#   utilities that fall within this category is higher. Utilities with lots of 
-#   violations generally have a %POC population greater than 20%. 
+#   utilities that fall within this category is higher. 
 ```
 
 ## How many boil water notices have there been over the past five years?
@@ -260,11 +310,129 @@ ggplot(viol_long, aes(x = estimate_mhi, y = value, color = name)) +
 
 ## Have there been any enforcement actions?
 ```{r}
+# this doesn't really have the information that I need, so I created another 
+# function 
+# TODO: add this enforcement action function to the R package: 
 sdwis <- wds$sdwis
 
-sdwis_filt_enf %>%
-  group_by(pwsid, enf_year) %>%
-  distinct(enforcement_action_type_code) 
+# grabbing enforcement actions from SDWIS: 
+# NOTE - this is a summary table and it looks like the models haven't 
+# been run since 2018.. 
+# source("./code/functions/get_SDWIS_enforcement_summary.R")
+# sdwis_enf <- get_SDWIS_enforcement(pwsids = demo$census$pwsid, state = "TX")
+
+# grabbing summary enforcement data and merging with all pwsids in our study: 
+# enf_summary <- sdwis_enf %>%
+#   group_by(pwsid, enf_year) %>%
+#   summarize(num_enf = length(unique(enfdate))) 
+# 
+# en_summary_all <- merge(enf_summary, keys$analysis_keys, by = "pwsid", 
+#                         all.y = T) %>%
+#   mutate(num_enf = replace_na(num_enf, 0))
+# 
+# # plot to see distribution: 
+# ggplot(en_summary_all, aes(x = num_enf)) +
+#   geom_histogram() + 
+#   facet_wrap(~enf_year, scales = "free")
+# 
+# mean(en_summary_all$num_enf)
+
+
+# grabbing the raw enforcement actions from SDWIS, which should be 
+# fully updated: 
+source("./code/functions/get_SDWIS_enforcement.R")
+sdwis_enf <- get_SDWIS_enforcement(pwsid = demo$census$pwsid)
+
+# summarizing data by five and ten years: 
+enf_summary_5yr <- sdwis_enf %>%
+  filter(enf_year >= year(Sys.Date())-5) %>%
+  group_by(pwsid) %>%
+  summarize(enf_5yr = length(unique(enforcement_id))) 
+
+enf_summary_10yr <- sdwis_enf %>%
+  filter(enf_year >= year(Sys.Date())-10) %>%
+  group_by(pwsid) %>%
+  summarize(enf_10yr = length(unique(enforcement_id))) 
+
+enf_summary <- merge(enf_summary_10yr, enf_summary_5yr, by = "pwsid", 
+                     all.x = T) %>%
+  mutate(enf_5yr = replace_na(enf_5yr, 0))
+
+# combining with the rest of the pwsids that don't have any 
+# enforcement actions: 
+sdwis_enf_all <- merge(enf_summary, keys$analysis_keys, by = "pwsid", 
+                       all.y = T) %>%
+  mutate(enf_5yr = replace_na(enf_5yr, 0), 
+         enf_10yr = replace_na(enf_10yr, 0))
+
+summary(sdwis_enf_all)
+
+# what percentage of pwsids have an enforcement action over the past 5yrs? 
+sdwis_enf_all %>%
+  filter(enf_10yr > 0) %>%
+  count()
+
+# plotting enforcement actions by violation type: 
+enf_viol_summary <- sdwis_enf_all %>%
+  pivot_longer(paperwork_violations_10yr:total_violations_5yr)
+
+ggplot(enf_viol_summary, aes(x = enf_5yr, 
+                          y = value, 
+                          color = estimate_mhi)) + 
+  geom_point() + 
+  geom_smooth(color = "grey") + 
+  facet_wrap(~name, scales = "free") + 
+  theme_minimal() +
+  labs(x = "Enforcement Actions, 5yr", y = "Violation Type")
+
+# checking out just health-based violations in relation to POC and MHI:
+ggplot(sdwis_enf_all, aes(x = enf_5yr, 
+                          y = healthbased_violations_5yr, 
+                          color = estimate_mhi)) + 
+  geom_point() + 
+  geom_smooth(color = "grey") + 
+  theme_minimal() +
+  labs(x = "Enforcement Actions, 5yr", y = "Health-based Violations, 5yr")
+
+ggplot(sdwis_enf_all, aes(x = enf_5yr, 
+                          y = healthbased_violations_5yr, 
+                          color = estimate_poc_alone_per)) + 
+  geom_point() + 
+  geom_smooth(color = "grey") + 
+  theme_minimal() +
+  labs(x = "Enforcement Actions, 5yr", y = "Health-based Violations, 5yr")
+
+# checking this out as a table: 
+sdwis_enf_all %>%
+    as.data.frame() %>%
+    select(-geometry) %>%
+    mutate(enf_bin = cut(enf_5yr, 8)) %>%
+    group_by(enf_bin) %>%
+    summarize(total_utilities = n(),
+              mean_mhi = mean(estimate_mhi, na.rm = T), 
+              mean_poc = mean(estimate_poc_alone_per, na.rm = T))
+
+# Overall findings: 
+# - 2928 (64.46%) of pwsids have had an enforcement action over the past 
+#   5 years, and 3930 (86.53%) over the past 10 years. 
+# 
+# - mean enforcement actions over the past 10 years: 42.6, and 20.7 over 
+#   the past 5 years. However, these data are highly skewed. 
+# 
+# - to no surprise, more health-based violations also indicate more 
+#   enforcement actions, but there's alone line that appears where there 
+#   are more enforcement actions but no health-based violations (possible these 
+#   violations are paperwork instead)
+# 
+# - there is a strong linear relationship between the number of enforcement 
+#   actions and the number of total violations over the past 5 and 10 years. 
+# 
+# - Visually it appears that paperwork violations (in comparison to health based) 
+#   often result in a enforcement action
+# 
+# - utilities with low enforcement actions over the last 5 years have a 
+#   higher MHI and %POC
+
 ```
 
 ## What is the Climate Vulerability Index?
@@ -274,6 +442,9 @@ cvi <- demo$cvi
 cvi_tidy <- cvi %>%
   select(-X) %>%
   rename(census_tract = fips_code)
+
+# loading analysis keys: 
+analysis_keys <- keys$analysis_keys
 
 # loading tract crosswalk: 
 pwsids <- unique(demo$census$pwsid)
@@ -289,6 +460,10 @@ cvi_cross <- merge(cvi_tidy, tx_crosswalk, by.x = "census_tract",
 cvi_weighted <- cvi_cross %>%
   group_by(pwsid) %>%
   summarize(cvi_weighted_score = weighted.mean(cvi_weighted))
+
+# what's the mean cvi for utilities?
+mean(cvi_weighted$cvi_weighted_score)
+median(cvi_weighted$cvi_weighted_score)
 
 # adding geographies for mapping: 
 pwsid_geometries <- demo$census %>%
@@ -316,9 +491,62 @@ leaflet() %>%
             title = "cvi",
             opacity = 1)
 
+# how does systems with high CVI relate to %POC, MHI, and violations?
+# assuming strongly correlated with %POC and MHI, since I think these are 
+# variables incorporated into the CVI calculation. 
+cvi_analysis <- cvi_weighted %>%
+  left_join(analysis_keys)
+
+ggplot(cvi_analysis, aes(x = cvi_weighted_score, 
+                          y = estimate_mhi)) + 
+  geom_point() + 
+  geom_smooth(color = "grey") + 
+  theme_minimal() +
+  geom_point(data = cvi_analysis %>% 
+               filter(healthbased_violations_5yr>0), 
+             color = "red") +
+  geom_smooth(data = cvi_analysis %>% 
+                filter(healthbased_violations_5yr>0), 
+             color = "red") + 
+  labs(x = "CVI", y = "MHI")
+
+ggplot(cvi_analysis, aes(x = cvi_weighted_score, 
+                          y = estimate_poc_alone_per)) + 
+  geom_point() + 
+  geom_smooth(color = "grey") + 
+  theme_minimal() +
+  geom_point(data = cvi_analysis %>% 
+               filter(healthbased_violations_5yr>0), 
+             color = "red") +
+  geom_smooth(data = cvi_analysis %>% 
+                filter(healthbased_violations_5yr>0), 
+             color = "red") + 
+  labs(x = "CVI", y = "%POC")
+
+
+# checking out binned results in table form: 
+cvi_analysis %>%
+    as.data.frame() %>%
+    select(-geometry) %>%
+    mutate(cvi_bin = cut(cvi_weighted_score, 5)) %>%
+    group_by(cvi_bin) %>%
+    summarize(total_utilities = n(),
+              paperwork_10yr = mean(paperwork_violations_10yr), 
+              paperwork_5yr = mean(paperwork_violations_5yr), 
+              health_10yr = mean(healthbased_violations_10yr), 
+              health_5yr = mean(healthbased_violations_5yr)) 
+
 # Overall findings: 
-# cities had a higher CVI, if you're in the suburbs of a city you have a lower 
-# CVI, rural areas have higher CVI 
+# - Spatially, CVI is high within cities, decreases in suburban areas, and 
+#   increases in rural systems 
+# - Most systems (823) fall within CVI values between 0.263-0.394. The mean
+#   CVI is 0.31, and the median is 0.32.
+# - As CVI increases, mean health-based violations over the past 5 and 10 years
+#   increases. 
+# - paperwork violations over the past 5 years are higher at utilities with low
+#   CVI (which is the opposite of health-based violations).
+# - CVI doesn't appear to be tightly related to %POC, but CVI increases with 
+#   as MHI decreases
 ```
 
 ## Does the system use green energy/focus on green energy?
@@ -328,6 +556,8 @@ leaflet() %>%
 
 ## How much water loss does the system have?
 ```{r}
+# water loss audits just have system name - need to prep the data for string 
+# matching: 
 pwsid_keys <- demo$census %>%
   select(pwsid, pws_name) %>%
   mutate(pws_name_tidy = str_to_upper(pws_name), 
@@ -340,9 +570,8 @@ pwsid_keys <- demo$census %>%
          pws_name_tidy = gsub("#", "", pws_name_tidy)) %>%
   unique() %>%
   select(-pws_name)
-  # st_as_sf(.) %>%
-  # st_transform(., crs = st_crs(enviro_sw$major_river_basins))
 
+# grabbing water loss audit data: 
 wl <- wds$water_loss %>%
   janitor::clean_names() %>%
   select(year, name_of_utility, real_loss_cost_in_dollars, 
@@ -409,21 +638,153 @@ all_pwsid_names %>%
   filter(is.na(pwsid)) %>%
   distinct(name_of_utility_tidy)
 
-# TODO: check out the fuzzy merging code that Phil sent for matching the 
-# remainder of these pwsids - most of them can reasonably match to the 
-# excel spreadsheet that I read in but would rather not do that by hand 
+# pulling in TCEQ historical names for help: 
+hist_names <- aws.s3::s3read_using(read.csv, 
+                                  object = "s3://tech-team-data/state-drinking-water/TX/raw/TX_TCEQ_DWW/TX_20231217/WaterSystemDetail/TX_Water System Historical Names_20231217_20231229203427.csv")
 
-# pwsids that require fuzzy matching: 
-fuzzy <- all_pwsid_names %>%
-  filter(is.na(pwsid)) %>%
-  distinct(name_of_utility_tidy) 
+hist_names_p2 <- 
+  aws.s3::s3read_using(read.csv, 
+                                  object = "s3://tech-team-data/state-drinking-water/TX/raw/TX_TCEQ_DWW/TX_20231203/WaterSystemDetail/TX_Water System Historical Names_20231203.csv")
 
-library(fuzzyjoin)
-name_dist <- stringdist_left_join(fuzzy, pwsid_names_tidy, 
-                                  by = c("name_of_utility_tidy" = "utility_name_tidy"),
-                                  method = "cosine",
-                                  max_dist = 2, distance_col = "dist") 
+all_hist_names <- rbind(hist_names, hist_names_p2) %>%
+  janitor::clean_names() %>%
+  # remove hyphens 
+  mutate(historical_name_s = gsub("-", "", historical_name_s), 
+         # remove all spaces 
+         historical_name_s = gsub(" ", "", historical_name_s), 
+         # remove #
+         historical_name_s = gsub("#", "", historical_name_s))
 
+# YEEHAW!!!
+all_name_matches <- merge(all_pwsid_names, all_hist_names, 
+                          by.x = "name_of_utility_tidy", 
+                          by.y = "historical_name_s", all.x = TRUE) %>%
+  mutate(final_pwsid = paste0(pwsid, water_system_no), 
+         final_pwsid = gsub("NA", "", final_pwsid)) %>%
+  # catching instances where the name matched with both datasets: 
+  mutate(final_pwsid = 
+           case_when(
+             pwsid == water_system_no ~ pwsid, 
+             TRUE ~ final_pwsid
+           )) %>%
+  # fixing matches where the pwsids are NOT identical - did this through 
+  # some google searches: 
+  mutate(final_pwsid = case_when(
+    # the Arrowhead water system in Hill county is different from this one: 
+    name_of_utility == "Arrowhead Water System" ~ pwsid, 
+    name_of_utility == "Bolivar WSC" ~ pwsid, 
+    name_of_utility == "CITY OF ARCOLA" ~ pwsid, 
+    # different from the Morgans Point Resort
+    name_of_utility == "CITY OF MORGANS POINT" ~ pwsid, 
+    name_of_utility == "ELM RIDGE WCID" ~ pwsid, 
+    name_of_utility == "Green Acres Mobile Home Park" ~ pwsid, 
+    name_of_utility == "Harris County MUD 49" ~ pwsid, 
+    name_of_utility == "Pleasant Hill WSC" ~ pwsid, 
+    name_of_utility == "Woodland Oaks Subdivision" ~ pwsid, 
+    name_of_utility %in% c("THE COMMONS WATER SUPPLY INC", 
+                           "The Commons Water Supply Inc") ~ water_system_no, 
+    # these below just didn't match but easy to do by hand: 
+    name_of_utility == "CITY OF MCALLEN" ~ "TX1080006",
+    name_of_utility %in% c("Fort Bend Co MUD # 42 Water Plant", 
+                           "FORT BEND COUNTY MUD 42") ~ "TX0790254",
+    TRUE ~ final_pwsid))
+
+# NOTE: there are three: 
+# - HARRIS COUNTY UTILITY DISTRICT 14 and 15 
+# - LCRA WEST TRAVIS COUNTY REGIONAL WS 
+# that can't be matched 
+
+# tidying and analysis: 
+wl_tidy <- all_name_matches %>%
+  select(year, name_of_utility, real_loss_cost_in_dollars, 
+         apparent_loss_cost_in_dollars, final_pwsid) %>%
+  rename(pwsid = final_pwsid, 
+         real_loss = real_loss_cost_in_dollars, 
+         appar_loss = apparent_loss_cost_in_dollars) %>%
+  mutate(real_loss = readr::parse_number(real_loss), 
+         appar_loss = readr::parse_number(appar_loss)) %>%
+  left_join(analysis_keys) %>%
+  st_as_sf() %>%
+  st_transform(., crs = st_crs(census))
+
+# summary stats: 
+wl_summary <- wl_tidy %>%
+  group_by(pwsid) %>%
+  summarize(mean_real_loss = mean(real_loss), 
+            mean_appar_loss = mean(appar_loss), 
+            mean_poc = mean(estimate_poc_alone_per), 
+            mean_mhi = mean(estimate_mhi), 
+            mean_health_5yr = mean(healthbased_violations_5yr))
+
+# plotting relationships: 
+ggplot(wl_tidy, aes(x = real_loss)) + 
+  geom_histogram()
+
+ggplot(wl_summary, aes(x = mean_mhi, y = mean_real_loss)) + 
+  geom_point(aes(color = mean_poc)) + 
+  geom_point(data = wl_summary %>%
+               filter(mean_health_5yr > 0), color = "red")
+
+ggplot(wl_summary, aes(x = mean_poc, y = mean_real_loss)) + 
+  geom_point(aes(color = mean_mhi)) + 
+  geom_point(data = wl_summary %>%
+               filter(mean_health_5yr > 0), color = "red")
+
+ggplot(wl_summary, aes(x = mean_appar_loss, y = mean_real_loss)) + 
+  geom_point() + 
+  geom_point(data = wl_summary %>%
+               filter(mean_health_5yr > 0), color = "red")
+
+# table of status for each apparent loss bin: 
+wl_summary %>%
+  as.data.frame() %>%
+  select(-geometry) %>%
+  mutate(real_loss_bin = cut(mean_real_loss, 
+                             breaks = c(quantile(mean_real_loss, 
+                                                 probs = seq(0, 1, by = 0.20))), 
+                             include.lowest = TRUE)) %>%
+  group_by(real_loss_bin) %>%
+  summarize(total_utilities = n(),
+            mean_poc = mean(mean_poc, na.rm = T), 
+            mean_mhi = mean(mean_mhi, na.rm = T), 
+            mean_health_5yr = mean(mean_health_5yr, na.rm = T)) %>%
+  mutate(quantile = c("0-20","20-40","40-60","60-80","80-100"))
+
+# what does high real loss look like spatially?
+wl_summary_sf <- wl_summary %>%
+  st_as_sf() %>%
+  st_transform(., crs = st_crs(census))
+
+loss_pal <- colorNumeric(
+  palette = viridis::mako(9),
+  domain = wl_summary_sf$mean_real_loss)
+
+leaflet() %>%
+  addProviderTiles(providers$CartoDB.VoyagerNoLabels, group = "Toner Lite") %>%
+  addPolygons(data = wl_summary_sf$geometry,
+              opacity = 9,
+              color = ~loss_pal(mean_real_loss),
+              weight = 1,
+              label = paste0("pwsid: ",
+                             wl_summary_sf$pwsid,
+                "; real loss: ", round(wl_summary_sf$mean_real_loss, 2))) %>%
+  addLegend("bottomright",
+            pal = loss_pal,
+            values = wl_summary_sf$mean_real_loss,
+            title = "real loss",
+            opacity = 1)
+
+
+# Overall findings: 
+# - mean real loss is $997,000,000; median is $19,050 - so LOTs of skew 
+# - mean apparent loss is $845,700,000; median is $10,010
+# - visually, highest mean real loss is around mhi OF ~$75,000, and 
+#   %POC of ~30%
+# - At higher quantiles, % POC increases, but the trend with MHI and mean 
+#   health-based viols over the past 5 years is less clear. MHI is largest 
+#   at the 80-100% quantile, but also high at the 0-20% quantile. For health
+#   based violations over the past 5-years, highest is at 0-20 quantile 
+#   and 40-60%
 ```
 
 ## What type of treatment is in use? 
@@ -448,35 +809,227 @@ treatments_dec03 <- aws.s3::s3read_using(read.csv,
 
 # this is probably not a comprehensive list 
 all_treat <- rbind(treatments_dec03, treatments_dec17)
-treat_simple <- all_treatments %>%
+treat_simple <- all_treat %>%
+  filter(water_system_no %in% demo$census$pwsid) %>%
   group_by(water_system_no) %>%
   distinct(supply)
 
-# desal tech --> brine is injected into wells?!?! like fracking?!
+# grabbing the total number of treatment steps: 
+treat_steps <- treat_simple %>%
+  group_by(water_system_no) %>%
+  summarize(treat_steps = n())
+
+ggplot(treat_steps, aes(x = n)) + 
+  geom_histogram() + 
+  labs(x = "Number of Treatment Steps", y = "Count of PWSIDs")+ 
+  theme_minimal()
+
+# combining treatment steps with other information we know about the pwsid: 
+pwsid_info <- demo$census
+pwsid_info <- pwsid_info %>%
+  select(pwsid:primary_source_code)
+
+pwsid_treat <- merge(treat_steps, pwsid_info, 
+                     by.x = "water_system_no", by.y = "pwsid",
+                     all.y = TRUE) 
+
+ggplot(pwsid_treat, aes(x = treat_steps, color = primary_source_code, 
+                        fill = primary_source_code)) + 
+  geom_histogram() + 
+  facet_wrap(~primary_source_code, scales = "free") + 
+  theme_minimal() + 
+  theme(legend.position = "none") + 
+  labs(x = "Number of Treatment Steps", y = "Number of PWSIDs")
+
+# what's the summary of treatment steps by source water? 
+pwsid_treat %>%
+  group_by(primary_source_code) %>%
+  summarize(total = n(), 
+            have_info = sum(!is.na(treat_steps)),
+            mean_treat_steps = mean(treat_steps, na.rm = T), 
+            median_treat_steps = median(treat_steps, na.rm = T)) 
+
+
+# Overall findings: 
+# - the coverage for these data is pretty poor - we only have data for 
+#   306 pwsids out of 4542 (~6.7%). Out of these, most of them are pulling 
+#   surface water (275), followed by GU (19), which is groundwater under the 
+#   influence of surface water
+# - for those pulling surface water, they have a mean of 25 treatment steps 
+# - utilities pulling SWP has ~6 treatment steps, GU have ~5 and GW 
+#   has ~4.
 ```
 
 ## What is the source of water? 
 ```{r}
-# we can match sw intakes with pwsids: 
-sw_intake_keys <- keys$pwsid_sw
+# basic info from sdwis: 
+source <- demo$census
+water_source <- source %>%
+  select(pwsid, pws_name, city_served, county_served, primary_source_code)
 
-census <- demo$census
-pwsid_info <- census %>%
-  select(pwsid:pop_density) 
+ggplot(water_source, aes(x = primary_source_code, fill = primary_source_code)) +
+  theme_minimal() + 
+  geom_histogram(stat = "count")+ 
+  scale_color_discrete(name = "") + 
+  scale_fill_discrete(name = "") + 
+  labs(x = "Primary Water Source", y = "Count of PWSIDs")
 
-pwsid_sw <- merge(pwsid_info, sw_intake_keys, by = c("pwsid"), all.y = TRUE)
-# matched with 449 entries - some pwsids seem to take water from multiple 
-# surface water reservoirs? Also there's a handful of pwsids that are "GW" but 
-# matched with a surface water intake 
 
 # looking at county and groundwater keys: 
 gw_keys <- keys$well_gw_county
 county_gw <- gw_keys %>%
   group_by(county_name) %>%
   distinct(aquifer_one, aquifer_two, aquifer_three, 
-           aquifer_four, aquifer_five)
+           aquifer_four, aquifer_five) %>%
+  mutate(county_name = toupper(county_name)) %>%
+  pivot_longer(aquifer_one:aquifer_five) %>%
+  group_by(county_name) %>%
+  distinct(value) %>%
+  filter(!is.na(value)) 
+
+county_aquifers <- aggregate(value ~ county_name, unique(county_gw), paste, 
+                             collapse = ", ")
+
+# matching pwsid with county and then aquifer 
+pwsid_gw <- water_source %>%
+  filter(primary_source_code == "GW") %>%
+  left_join(county_gw, c("county_served" = "county_name")) 
+  # separate(value, c("aquifer", "type"), sep = "-")
+
+pwsid_summary <- pwsid_gw %>%
+  as.data.frame() %>%
+  select(-geometry) %>%
+  group_by(value) %>%
+  summarize(number_of_pwsids = length(unique(pwsid)))
+
+ggplot(pwsid_summary, aes(x = value, y = number_of_pwsids, 
+                          color = value, fill = value)) + 
+  geom_bar(stat = "identity") + 
+  coord_flip() + 
+  theme_minimal() + 
+  theme(legend.position = "none") + 
+  labs(y = "Number of Utilities", x = "Aquifer")
+
+## calculate county-level stats to investigate community
+# characteristics of those served by groundwater
+census_vars <- c(total_pop = "B01003_001",
+                 black_alone = "B02001_003", 
+                 asian_alone = "B02001_005", 
+                 white_alone = "B02001_002", 
+                 AIAN_alone = "B02001_004", 
+                 NAPI_alone = "B02001_006", 
+                 other_alone = "B02001_007", 
+                 mixed_alone = "B02001_008",
+                 hisp_alone = "B03003_003", 
+                 mhi = "B19013_001", 
+                 under_6  = "B23008_002", 
+                 over_65 = "B09021_022", 
+                 only_english = "B99162_002", 
+                 other_lang = "B99162_003", 
+                 no_school = "B15003_002", 
+                 prof_degree = "B15003_024", 
+                 foreign = "B99051_005", 
+                 pov_level_at_above_150 = "B06012_004")
+tx_county <- tidycensus::get_acs(
+  geography = "county", 
+  variables = census_vars, 
+  state = c("TX"), 
+  year = 2021,
+  geometry = TRUE
+)
+counties <- unlist(strsplit(tx_county$NAME, split = ","))
+tx_county$counties <- trimws(counties[grepl("County", counties)])
+
+tx_wide <- pivot_wider(tx_county, 
+                       names_from = c("variable"), 
+                       values_from = c("estimate", "moe"))
+tx_wide <- tx_wide %>%
+  select(starts_with(c("estimate", "counties"))) %>%
+  # leaving out columns that are totals or mhi:
+  mutate_at(vars(!c("estimate_total_pop", "estimate_mhi", "counties")), 
+            ~((./estimate_total_pop)*100)) %>%
+  mutate(estimate_poc_alone = (100 - estimate_white_alone)) %>%
+  mutate(counties = gsub(" County", "", counties), 
+         counties = toupper(counties))
+
+county_aquifer_stats <- merge(tx_wide, county_aquifers, 
+                              by.x = "counties", by.y = "county_name")
+
+aquifer_summary <- pwsid_gw %>%
+  as.data.frame() %>%
+  select(-geometry) %>%
+  group_by(value) %>%
+  summarise(counties = paste(unique(county_served), collapse=", "))
+
+
+
+# investigating surface water: 
+pwsid_sw <- water_source %>%
+  filter(primary_source_code == "SW") %>%
+  left_join(sw_intake_keys) 
+
+# checking out impaired basins: 
+imp_basin <- enviro_sw$impaired_basins
+simp_basin_names <- unlist(str_split(imp_basin$basin_name, " River|Coastal|Creek"))
+imp_basin$imp_basin_names <- simp_basin_names[seq(1, length(simp_basin_names), by = 2)] 
+
+simple_basin_info <- imp_basin %>%
+  select(imp_basin_names, pct_impaired)
+
+pwsid_sw_basins <- merge(pwsid_sw, simple_basin_info, 
+                         by.x = "basin_name_short", 
+                         by.y = "imp_basin_names", all.x = TRUE)
+
+# which reservoirs link to a bunch of pwsids?
+by_res <- pwsid_sw_basins %>%
+  as.data.frame() %>%
+  select(-geometry) %>%
+  group_by(res_name) %>%
+  summarize(total = length(unique(pwsid)))
+
+# how many pwsids are getting from basins where the percentage impaired 
+# is greater than 60%?
+# TODO: probably an st_intersection here? 
+pwsid_sw_basins %>%
+  filter(pct_impaired >= 60) %>%
+  count()
+
+
+pwsid_sw_basins %>%
+  as.data.frame() %>%
+  select(-geometry) %>%
+  left_join(analysis_keys) %>%
+  select(-geometry) %>%
+  mutate(pct_imp = cut(pct_impaired, 
+                       breaks = c(quantile(pct_impaired, 
+                                           probs = seq(0, 1, by = 0.20), 
+                                           na.rm = T)), 
+                       include.lowest = TRUE)) %>%
+  group_by(pct_imp) %>%
+  summarize(total_utilities = n(),
+            mean_poc = mean(estimate_poc_alone_per, na.rm = T), 
+            mean_mhi = mean(estimate_mhi, na.rm = T), 
+            mean_health_5yr = mean(healthbased_violations_5yr, na.rm = T),
+            mean_paperwork_5yr = mean(paperwork_violations_5yr, na.rm = T)) 
+
+
+
+# Overall findings: 
+# - most pwsids are geting water from aquifers, followed by purchasing 
+#   surface water. 
+# - of the pwsids pulling groundwater, most are pulling from the gulf coast 
+#   major aquifer, followed by the trinity and carrizo major aquifers. 
+# 
+# - we have surface water intake information from 286 pwsids out of 392 
+#   that pull surface water 
+# - 53 pwsids are pulling surface water from a basin that is >= 60% 
+#   impaired 
+# - 15 pwsids are pulling from Lake Travis, and 12 from the Cedar Creek 
+#   reservoir, and 12 from Lake Tawakoni 
 ```
 
 Potential rabbit holes of interest: 
 - SDIWS violations - investigating the type of violation (i.e. MON, RPT (?), MR (monitoring and reporting), TT (treatment technique), MCL (max contaminant level), and MRDL (max residual disinfectant))
 - Deeper dive into SRF green project reserve
+- Linking reservoir and groundwater info with source water quality measurements 
+- Are pwsids located in a highly impaired basin more likely to have water quality violations? 
