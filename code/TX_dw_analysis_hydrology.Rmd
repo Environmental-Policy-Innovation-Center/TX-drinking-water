@@ -48,10 +48,10 @@ crosswalk <- aws.s3::s3read_using(read.csv,
 # NOTE - there MIGHT be some pwsid & names we can link together based on 
 # entity names, but would require some fuzzy name matching (again)
 
-# TODO: make a analysis key for county-level stats for comparisons with county 
-# MHI, % POC, etc. 
-
 # comprehensive report here: https://www.twdb.texas.gov/waterplanning/swp/2022/docs/SWP22-Water-For-Texas.pdf?d=126542.70000004768
+# TODO: this report also has annual groundwater availability by aquifer ??!!
+# would be cool to match this with our aquifer data to identify counties that 
+# might be at risk. And they also have socioeconomic impact (pg 180)?!?!??!
 
 # projected values to 2070 - values are in acre-feet/year
 proj_pop <- wds$TXSWP_pop
@@ -166,7 +166,7 @@ ggplot(swp_long, aes(x = decade, y = value, group = name,
   theme_minimal() 
 
 
-# what does the distribution of needs look like?
+# what does the distribution of needs look like across counties? 
 needs_plot <- ggplot(needs, aes(x = decade, y = needs, 
                                 color = wug_county)) + 
   geom_point() + 
@@ -268,6 +268,21 @@ viols %>%
               mean_mhi = mean(estimate_mhi, na.rm = T), 
               mean_poc = mean(estimate_poc_alone_per, na.rm = T))
 
+# by deciles(ish), had to break them up into more bins
+viols %>%
+  as.data.frame() %>%
+  select(-geometry) %>%
+  mutate(viol_bin = cut(healthbased_violations_5yr, 
+                       breaks = c(unique(quantile(healthbased_violations_5yr, 
+                                           probs = seq(0, 1, by = 0.01), 
+                                           na.rm = TRUE))), 
+                       include.lowest = TRUE)) %>%
+  group_by(viol_bin) %>%
+    summarize(total_utilities = n(),
+              mean_mhi = mean(estimate_mhi, na.rm = T), 
+              mean_poc = mean(estimate_poc_alone_per, na.rm = T)) 
+  # mutate(quantile = c("0-20","20-40","40-60","60-80","80-100", "NA"))
+
 # what about all of the other categories of violations? 
 ggplot(viol_long, aes(x = estimate_poc_alone_per, y = value, color = name)) +
   geom_point() +
@@ -301,6 +316,9 @@ ggplot(viol_long, aes(x = estimate_mhi, y = value, color = name)) +
 #   violation increase the MHI decreases. % POC is highest at low levels of 
 #   health-based violations, but that might be because the total number of
 #   utilities that fall within this category is higher. 
+
+# After splitting the data into more equal bins (deciles): 
+# MHI appears to decrease as quantile increases, and % poc decreases
 ```
 
 ## How many boil water notices have there been over the past five years?
@@ -314,29 +332,6 @@ ggplot(viol_long, aes(x = estimate_mhi, y = value, color = name)) +
 # function 
 # TODO: add this enforcement action function to the R package: 
 sdwis <- wds$sdwis
-
-# grabbing enforcement actions from SDWIS: 
-# NOTE - this is a summary table and it looks like the models haven't 
-# been run since 2018.. 
-# source("./code/functions/get_SDWIS_enforcement_summary.R")
-# sdwis_enf <- get_SDWIS_enforcement(pwsids = demo$census$pwsid, state = "TX")
-
-# grabbing summary enforcement data and merging with all pwsids in our study: 
-# enf_summary <- sdwis_enf %>%
-#   group_by(pwsid, enf_year) %>%
-#   summarize(num_enf = length(unique(enfdate))) 
-# 
-# en_summary_all <- merge(enf_summary, keys$analysis_keys, by = "pwsid", 
-#                         all.y = T) %>%
-#   mutate(num_enf = replace_na(num_enf, 0))
-# 
-# # plot to see distribution: 
-# ggplot(en_summary_all, aes(x = num_enf)) +
-#   geom_histogram() + 
-#   facet_wrap(~enf_year, scales = "free")
-# 
-# mean(en_summary_all$num_enf)
-
 
 # grabbing the raw enforcement actions from SDWIS, which should be 
 # fully updated: 
@@ -411,6 +406,25 @@ sdwis_enf_all %>%
     summarize(total_utilities = n(),
               mean_mhi = mean(estimate_mhi, na.rm = T), 
               mean_poc = mean(estimate_poc_alone_per, na.rm = T))
+
+# by quantiles:
+sdwis_enf_all %>%
+  as.data.frame() %>%
+  select(-geometry) %>%
+  mutate(enf_bin = cut(enf_5yr, 
+                       breaks = c(unique(quantile(enf_5yr, 
+                                                  probs = seq(0, 1, by = 0.05), 
+                                                  na.rm = TRUE))), 
+                       include.lowest = TRUE)) %>%
+  group_by(enf_bin) %>%
+  summarize(total_utilities = n(),
+            paperwork_10yr = mean(paperwork_violations_10yr), 
+            paperwork_5yr = mean(paperwork_violations_5yr), 
+            health_10yr = mean(healthbased_violations_10yr), 
+            health_5yr = mean(healthbased_violations_5yr), 
+            mean_mhi = mean(estimate_mhi, na.rm = T), 
+              mean_poc = mean(estimate_poc_alone_per, na.rm = T))
+  # mutate(quantile = c("0-20","20-40","40-60","60-80","80-100", "NA"))
 
 # Overall findings: 
 # - 2928 (64.46%) of pwsids have had an enforcement action over the past 
@@ -536,26 +550,70 @@ cvi_analysis %>%
               health_10yr = mean(healthbased_violations_10yr), 
               health_5yr = mean(healthbased_violations_5yr)) 
 
+# by quantile: 
+cvi_analysis %>%
+  as.data.frame() %>%
+  select(-geometry) %>%
+  mutate(cvi_bin = cut(cvi_weighted_score, 
+                       breaks = c(quantile(cvi_weighted_score, 
+                                           probs = seq(0, 1, by = 0.20), 
+                                           na.rm = TRUE)), 
+                       include.lowest = TRUE)) %>%
+  group_by(cvi_bin) %>%
+  summarize(total_utilities = n(),
+            paperwork_10yr = mean(paperwork_violations_10yr), 
+            paperwork_5yr = mean(paperwork_violations_5yr), 
+            health_10yr = mean(healthbased_violations_10yr), 
+            health_5yr = mean(healthbased_violations_5yr), 
+            mean_mhi = mean(estimate_mhi, na.rm = T), 
+            mean_poc = mean(estimate_poc_alone_per, na.rm = T)) %>%
+  mutate(quantile = c("0-20","20-40","40-60","60-80","80-100"))
+
 # Overall findings: 
 # - Spatially, CVI is high within cities, decreases in suburban areas, and 
 #   increases in rural systems 
+
 # - Most systems (823) fall within CVI values between 0.263-0.394. The mean
 #   CVI is 0.31, and the median is 0.32.
+
 # - As CVI increases, mean health-based violations over the past 5 and 10 years
 #   increases. 
+
 # - paperwork violations over the past 5 years are higher at utilities with low
 #   CVI (which is the opposite of health-based violations).
+
 # - CVI doesn't appear to be tightly related to %POC, but CVI increases with 
 #   as MHI decreases
+
+# By quantile: 
+#  - Utilities that fall under the highest CVI quantile (0.47 - 0.66), have 
+#   lowest MHI, largest health-based violations over the past 5 and 10 years, 
+#   and the lowest number of paperwork violations over the past 10 years
 ```
 
 ## Does the system use green energy/focus on green energy?
 ```{r}
-# Flagging this one for a deeper dive in the future 
+# We can actually probably answer this using the IUPs GPR
+iup <- fin$TX_PPL_SFY14_24 %>%
+  rename(pwsid = pws_id)
+
 ```
 
 ## How much water loss does the system have?
 ```{r}
+# real loss GMD = gallons/mile/day 
+# GCD = gallons/connection/day 
+# ILI = Infrastructure leakage index 
+# GPCD = gallons per capita per day 
+# this is NOT a comprehensive list - I believe it's just for utilities 
+# with more than 3,300 connections 
+# 
+# apparent loss = paper losses when water reaches a customer but the volume 
+#   is not accurately measured due to meter inaccuracy 
+# real loss = physical loss from infrastrucutre leakage - occur prior to 
+#   reaching the customer (we care more about these, right?!)
+all_wl <- wds$water_loss
+
 # water loss audits just have system name - need to prep the data for string 
 # matching: 
 pwsid_keys <- demo$census %>%
@@ -774,6 +832,10 @@ leaflet() %>%
             title = "real loss",
             opacity = 1)
 
+# TODO: what has the net change been in mean loss? this would require the min
+#   and max year for each utility, since our temporal coverage varies for 
+#   each. 
+
 
 # Overall findings: 
 # - mean real loss is $997,000,000; median is $19,050 - so LOTs of skew 
@@ -876,6 +938,8 @@ ggplot(water_source, aes(x = primary_source_code, fill = primary_source_code)) +
 
 
 # looking at county and groundwater keys: 
+# NOTE: hatched aquifersare subcrop areas (part of an aquifer that lies or dips
+# below other formations)
 gw_keys <- keys$well_gw_county
 county_gw <- gw_keys %>%
   group_by(county_name) %>%

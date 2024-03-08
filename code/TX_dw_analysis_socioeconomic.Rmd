@@ -42,8 +42,38 @@ crosswalk <- aws.s3::s3read_using(read.csv,
 
 ## How have water utilities been funded historically? 
 ```{r}
-ppl <- fin$TX_PPL_SFY14_24
+# metadata for these columns: 
+#   - gpr = green project reserve, a capitalization grant that may be used for 
+#           projects to address green infrastructure, water, or energy
+#           efficiency improvements. This is how much of the project's total 
+#           cost is applicable to the GPR. 
 
+# oof this data is ~messy~ 
+iup <- fin$TX_PPL_SFY14_24 %>%
+  rename(pwsid = pws_id)
+# gotta fix weird pwsids
+for(i in 1:nrow(iup)){
+  # fill ones with 7 characters, which we can confidently fix: 
+  if(nchar(iup$pwsid[i]) %in% c(7)) {
+      iup$pwsid[i] <- paste0("TX", iup$pwsid[i], collapse = "")
+  }
+}
+
+# creating a flag for PWSIDS that need to be checked 
+iup <- iup %>%
+  mutate(pwsid_flag = case_when(
+    nchar(pwsid) != 9 ~ "flag", 
+    pwsid == "TXPending" ~ "flag", 
+    TRUE ~ "NA"
+  ))
+
+# how many do we have to match? 124 
+iup %>%
+  filter(pwsid_flag == "flag") %>%
+  group_by(entity) %>%
+  count()
+
+# TODO: more fuzzy name matching!! 
 ```
 
 ## What races/ethnicities are served by what system? 
@@ -92,7 +122,7 @@ ggplot(race_viol_long %>% filter(viol_type %in% c("healthbased_violations_10yr",
   theme(legend.position = "bottom")
 
 # calculating and distribution of violations across different race bins: 
-race_bin_stats <- c(0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100)
+# race_bin_stats <- c(0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100)
 races <- race_viols_wide %>%
   select(estimate_white_alone_per:estimate_hisp_alone_per) %>%
   names()
@@ -100,18 +130,40 @@ races <- race_viols_wide %>%
 race_viol_breakdown <- data.frame()
 for(i in 1:length(races)){
   race_i <- races[i]
+  message(race_i)
+  
+  # method for looking at quantiles: 
   race_alone_bins <- race_viols_wide %>%
     as.data.frame() %>%
     select(-geometry) %>%
-    mutate(poc_bin = cut(!!sym(race_i), race_bin_stats)) %>%
+    mutate(poc_bin = cut(!!sym(race_i), 
+                         breaks = c(unique(quantile(!!sym(race_i), 
+                                             probs = seq(0, 1, by = 0.20),
+                                             na.rm = T))), 
+                         include.lowest = TRUE)) %>%
     group_by(poc_bin) %>%
     summarize(total_utilities = n(),
               paperwork_10yr = mean(paperwork_violations_10yr), 
               paperwork_5yr = mean(paperwork_violations_5yr), 
               health_10yr = mean(healthbased_violations_10yr), 
-              health_5yr = mean(healthbased_violations_5yr)) %>%
-    mutate(race = race_i)
+              health_5yr = mean(healthbased_violations_5yr), 
+              mean_mhi = mean(estimate_mhi.x, na.rm = T)) %>%
+    mutate(race = race_i, 
+           quantile = ntile(poc_bin, n = length(unique(poc_bin)))) 
   race_viol_breakdown <- rbind(race_viol_breakdown, race_alone_bins)
+  
+  # method for doing just bins: 
+  # race_alone_bins <- race_viols_wide %>%
+  #   as.data.frame() %>%
+  #   select(-geometry) %>%
+  #   mutate(poc_bin = cut(!!sym(race_i), race_bin_stats)) %>%
+  #   group_by(poc_bin) %>%
+  #   summarize(total_utilities = n(),
+  #             paperwork_10yr = mean(paperwork_violations_10yr), 
+  #             paperwork_5yr = mean(paperwork_violations_5yr), 
+  #             health_10yr = mean(healthbased_violations_10yr), 
+  #             health_5yr = mean(healthbased_violations_5yr)) %>%
+  #   mutate(race = race_i)
 }
 
 # this is the general final takeaway for race stats: 
@@ -129,6 +181,10 @@ names(race_5yr_healthbased) <- c("%Race", "White_Viol", "Black_Viol",
                                  "Hisp_Viol")
 
 race_5yr_healthbased
+# NOTE: this tibble is not as pretty when you look at the data by quantiles, 
+# since the quantiles are different by race. Regardless, it's still a helpful
+# visual aid. 
+
 
 # Overall summary: 
 # - Texas is pretty segregated - % white alone is generally greater than 75%, 
@@ -153,6 +209,14 @@ race_5yr_healthbased
 
 # - MHI - generally centered around ~60k - and also has a lot of health-based 
 #   violations that mirror this distribution 
+# 
+# When looking at quanitles: 
+#   - Utilities that fall within the highest 20% of percent white (89.2- 100%) 
+#     have more mean health-based violations (1.72) 
+# 
+#   - Utilities that fall within 60-80% quantile of latino/a populations have 
+#     the highest mean health-based violations. 
+
 ```
 
 
@@ -184,26 +248,54 @@ edu_bin_stats <- seq(0, 20, by = 2)
 no_school <- edu_level_analysis %>%
     as.data.frame() %>%
     select(-geometry) %>%
-    mutate(edu_bin = cut(estimate_no_school_per, edu_bin_stats)) %>%
-    group_by(edu_bin) %>%
-    summarize(total_utilities = n(),
-              paperwork_10yr = mean(paperwork_violations_10yr), 
-              paperwork_5yr = mean(paperwork_violations_5yr), 
-              health_10yr = mean(healthbased_violations_10yr), 
-              health_5yr = mean(healthbased_violations_5yr)) %>%
-  mutate(edu_level = "no_school")
-  
+  mutate(edu_bin = cut(estimate_no_school_per, 
+                             breaks = c(quantile(estimate_no_school_per, 
+                                                 probs = seq(0, 1, by = 0.20), 
+                                                 na.rm = TRUE)), 
+                             include.lowest = TRUE)) %>%
+  group_by(edu_bin) %>%
+  summarize(total_utilities = n(),
+            paperwork_10yr = mean(paperwork_violations_10yr), 
+            paperwork_5yr = mean(paperwork_violations_5yr), 
+            health_10yr = mean(healthbased_violations_10yr), 
+            health_5yr = mean(healthbased_violations_5yr), 
+            mean_mhi = mean(estimate_mhi, na.rm = T)) %>%
+  mutate(edu_level = "no_school", 
+         quantile = c("0-20","20-40","40-60","60-80","80-100", "NA"))
+  #   mutate(edu_bin = cut(estimate_no_school_per, edu_bin_stats)) %>%
+  #   group_by(edu_bin) %>%
+  #   summarize(total_utilities = n(),
+  #             paperwork_10yr = mean(paperwork_violations_10yr), 
+  #             paperwork_5yr = mean(paperwork_violations_5yr), 
+  #             health_10yr = mean(healthbased_violations_10yr), 
+  #             health_5yr = mean(healthbased_violations_5yr)) %>%
+  # mutate(edu_level = "no_school")
+
 prof <- edu_level_analysis %>%
-    as.data.frame() %>%
-    select(-geometry) %>%
-    mutate(edu_bin = cut(estimate_prof_degree_per, edu_bin_stats)) %>%
-    group_by(edu_bin) %>%
-    summarize(total_utilities = n(),
-              paperwork_10yr = mean(paperwork_violations_10yr), 
-              paperwork_5yr = mean(paperwork_violations_5yr), 
-              health_10yr = mean(healthbased_violations_10yr), 
-              health_5yr = mean(healthbased_violations_5yr)) %>%
-  mutate(edu_level = "prof_degree")
+  as.data.frame() %>%
+  select(-geometry) %>%
+  mutate(edu_bin = cut(estimate_prof_degree_per, 
+                       breaks = c(quantile(estimate_prof_degree_per, 
+                                           probs = seq(0, 1, by = 0.20), 
+                                           na.rm = TRUE)), 
+                       include.lowest = TRUE)) %>%
+  group_by(edu_bin) %>%
+  summarize(total_utilities = n(),
+            paperwork_10yr = mean(paperwork_violations_10yr), 
+            paperwork_5yr = mean(paperwork_violations_5yr), 
+            health_10yr = mean(healthbased_violations_10yr), 
+            health_5yr = mean(healthbased_violations_5yr), 
+            mean_mhi = mean(estimate_mhi, na.rm = T)) %>%
+  mutate(edu_level = "prof_degree", 
+         quantile = c("0-20","20-40","40-60","60-80","80-100", "NA"))
+  #   mutate(edu_bin = cut(estimate_prof_degree_per, edu_bin_stats)) %>%
+  #   group_by(edu_bin) %>%
+  #   summarize(total_utilities = n(),
+  #             paperwork_10yr = mean(paperwork_violations_10yr), 
+  #             paperwork_5yr = mean(paperwork_violations_5yr), 
+  #             health_10yr = mean(healthbased_violations_10yr), 
+  #             health_5yr = mean(healthbased_violations_5yr)) %>%
+  # mutate(edu_level = "prof_degree")
 
 edu_summaries <- rbind(prof, no_school)
 
@@ -254,6 +346,18 @@ ggplot(mhi_school, aes(x = value, y = estimate_mhi)) +
 #   15 pwsids fell within this category. A similar rise in health-based 
 #   violations was also discovered in communities with a similar % of 
 #   individuals without schooling. 
+
+#     By quantiles: 
+#       - Utilities that fall within the lowest 20% quantile of professional 
+#         degrees (0 - 0.05%) have the most mean health-based and paperwork 
+#         violations over the past 5 years. As quantile increases in 
+#         professional degrees, MHI increases. 
+# 
+#       - Utilities that fall within the 40-60% quantile of populations 
+#         without schooling (0.65 - 1.12%) have the most mean health-based 
+#         violations. As quantile increase, MHI decreases and mean paperwork 
+#         violations over the past 5 and 10 years increase.  
+
 ```
 
 ## What are the population density demographics of those served? 
@@ -332,6 +436,24 @@ pop_density_analysis %>%
               health_10yr = mean(healthbased_violations_10yr), 
               health_5yr = mean(healthbased_violations_5yr)) 
 
+# checking out data by quantles: 
+pop_density_analysis %>%
+    as.data.frame() %>%
+    select(-geometry) %>%
+  mutate(pop_density_bin = cut(pop_density, 
+                             breaks = c(quantile(pop_density, 
+                                                 probs = seq(0, 1, by = 0.20), 
+                                                 na.rm = TRUE)), 
+                             include.lowest = TRUE)) %>%
+  group_by(pop_density_bin) %>%
+  summarize(total_utilities = n(),
+            paperwork_10yr = mean(paperwork_violations_10yr), 
+            paperwork_5yr = mean(paperwork_violations_5yr), 
+            health_10yr = mean(healthbased_violations_10yr), 
+            health_5yr = mean(healthbased_violations_5yr), 
+            mean_mhi = mean(estimate_mhi, na.rm = T)) %>%
+  mutate(quantile = c("0-20","20-40","40-60","60-80","80-100"))
+
 # Overall findings: 
 # - Most utilities have a population density of 0-50,000
 # - utilities with a population density between 0-10,000 and between 
@@ -343,6 +465,11 @@ pop_density_analysis %>%
 #   rural systems. 
 # - Mean paperwork violations over the past 5 and ten years are highest for utilities
 #   with a population density between 100000-200000 
+# - By quantiles: 
+#     - Utilities that fall within the lowest population density quantile 
+#       (0 - 2,330) have more mean health-based violations. 
+#     - Utilities that fall within the 20-40 quartile (2,330 - 7,490) 
+#       have the highest mean paperwork violations over the past 5 and 10 years.  
 ```
 
 ## What languages are spoken by those served?
@@ -410,6 +537,24 @@ lang_analysis %>%
               health_10yr = mean(healthbased_violations_10yr), 
               health_5yr = mean(healthbased_violations_5yr)) 
 
+# by quantile: 
+lang_analysis %>%
+  as.data.frame() %>%
+  select(-geometry) %>%
+  mutate(lang_bin = cut(estimate_only_english_per, 
+                       breaks = c(quantile(estimate_only_english_per, 
+                                           probs = seq(0, 1, by = 0.20), 
+                                           na.rm = TRUE)), 
+                       include.lowest = TRUE)) %>%
+  group_by(lang_bin) %>%
+  summarize(total_utilities = n(),
+            paperwork_10yr = mean(paperwork_violations_10yr), 
+            paperwork_5yr = mean(paperwork_violations_5yr), 
+            health_10yr = mean(healthbased_violations_10yr), 
+            health_5yr = mean(healthbased_violations_5yr), 
+            mean_mhi = mean(estimate_mhi, na.rm = T)) %>%
+  mutate(quantile = c("0-20","20-40","40-60","60-80","80-100", "NA"))
+
 # quick stats: 
 lang_analysis %>%
   filter(estimate_only_english_per >= 60) %>%
@@ -420,9 +565,12 @@ lang_analysis %>%
 #     % POC. Based on the trends, it also appears that systems with health-based  
 #     violations are concentrated around systems that serve communities where 
 #     >= 75% of the community speaks only English. 
+
 #   - as the percentage of people that speak only English at home increases, the 
 #     MHI increases 
+
 #   - 78.8% of sabs serve communities where >= 60% of people speak only English 
+
 #   - When a utility serves populations where 0-10% of the community speaks 
 #     only english, the average number of health-based violations is highest 
 #     by about 1. Another peak is found around communities where 40-50% speak 
@@ -430,6 +578,11 @@ lang_analysis %>%
 #     more than 60% of the community speaks only English, but that might again 
 #     be an artifact since there are more utilities that fall into this 
 #     category. 
+# 
+#   - By quantile:
+#       - Utilities that fall within the higher quantiles (40-100) of 
+#         the percent of population that speaks only english generally have 
+#         more mean heath-based violations over the last 5 years and lower MHI
 ```
 
 ## What nationality/immigration status reflect those seved? 
@@ -475,17 +628,6 @@ ggplot(immi_analysis, aes(x = estimate_foreign_per,
              color = "red") + 
   labs(x = "% Immigrant Status", y = "MHI")
 
-# how does immigrant status relate to health-based violations? 
-ggplot(immi_analysis, aes(x = estimate_foreign_per, 
-                          y = healthbased_violations_5yr)) + 
-  geom_point() + 
-  geom_smooth(color = "grey") + 
-  theme_minimal() +
-  geom_point(data = immi_analysis %>% filter(healthbased_violations_5yr>0), 
-             color = "red") +
-  geom_smooth(data = immi_analysis %>% filter(healthbased_violations_5yr>0), 
-             color = "red") 
-
 # checking out binned results in table form: 
 immi_analysis %>%
     as.data.frame() %>%
@@ -498,25 +640,62 @@ immi_analysis %>%
               health_10yr = mean(healthbased_violations_10yr), 
               health_5yr = mean(healthbased_violations_5yr)) 
 
+# by quantile: 
+immi_analysis %>%
+  as.data.frame() %>%
+  select(-geometry) %>%
+  mutate(immi_bin = cut(estimate_foreign_per, 
+                       breaks = c(quantile(estimate_foreign_per, 
+                                           probs = seq(0, 1, by = 0.20), 
+                                           na.rm = TRUE)), 
+                       include.lowest = TRUE)) %>%
+  group_by(immi_bin) %>%
+  summarize(total_utilities = n(),
+            paperwork_10yr = mean(paperwork_violations_10yr), 
+            paperwork_5yr = mean(paperwork_violations_5yr), 
+            health_10yr = mean(healthbased_violations_10yr), 
+            health_5yr = mean(healthbased_violations_5yr), 
+            mean_mhi = mean(estimate_mhi, na.rm = T)) %>%
+  mutate(quantile = c("0-20","20-40","40-60","60-80","80-100", "NA"))
+
 # Overall findings: 
 # - 83.14% of pwsids serve communities where less than 20% immigrated from a 
 #   different county. 
+
 # - to no surprise, pwsids with larger % immigrant status also have 
 #   higher % POC - this is a pretty strong relationship. 
+
 # - pwsids with larger % immigrant populations generally have smaller MHI, 
 #   but this correlation is pretty weak. When looking pwsids with health-
 #   based violations over the past 5 years, they tend to have lower MHI
 #   and smaller % population that are immigrants. 
+
 # - pwsids with <= 20% of the community of immigrant status generally have 
 #   more health-based violations over the past 5 (and particularly 10) years, 
 #   but that might be due to the fact there are more pwsids that fall into 
 #   this category. Paperwork violations also tend to be higher with utilities 
 #   that serve communities where small % of the community is from out of the 
 #   county. 
+
+# By quantile: 
+# - Utilities that fall within the lowest quantile of % immigrant population 
+#   have more mean health-based and paperwork violations over the past 5 and 10 
+#   years. 
+# - Utilities that fall within the highest quantile of % immigrant 
+#   population have larger MHI
 ```
 
 ## How affordable is the water? 
 ```{r}
+# NOTE: based on past IUPs, here is how hcf relates to principal forgiveness as
+# a % of DWSRF funded project costs remaining after subtracting other 
+# DWSRF princiapl forgiveness: 
+# https://www.twdb.texas.gov/financial/programs/DWSRF/doc/SFY2020/SFY2020_DWSRF_IUP.pdf
+#   - hcf difference
+#       - >=0 and < 1.5% --> 30% 
+#       - >= 1.5 and < 3 % --> 50% 
+#       - >= 3% --> 70%
+
 # NOTE: the water affordability data is NOT comprehensive - only has ~706 
 # unique pwsids 
 aff <- fin$TX_affordability_DAC %>%
@@ -528,7 +707,7 @@ analysis_keys <- keys$analysis_keys
 aff_analysis <- merge(aff, analysis_keys, by = "pwsid") 
 
 # how does household cost factor relate to %POC?
-ggplot(aff_analysis, aes(x = hcf, 
+ggplot(aff_analysis, aes(x = hcf*100, 
                           y = estimate_poc_alone_per)) + 
   geom_point() + 
   geom_smooth() + 
@@ -538,7 +717,8 @@ ggplot(aff_analysis, aes(x = hcf,
              color = "red") +
   geom_smooth(data = aff_analysis %>% filter(healthbased_violations_5yr>0), 
              color = "red") + 
-  labs(x = "Household Cost Factor", y = "%POC")
+  labs(x = "Household Cost Factor", y = "%POC") + 
+  geom_vline(xintercept= c(0, 1.5, 3), lty = "dashed")
 
 # how does household cost factor relate to MHI?
 # that ~makes sense~ since mhi was used to calculate MHI - this graph 
@@ -578,6 +758,26 @@ aff_analysis %>%
               health_10yr = mean(healthbased_violations_10yr), 
               health_5yr = mean(healthbased_violations_5yr)) 
 
+# by quantile: 
+aff_analysis %>%
+  as.data.frame() %>%
+  select(-geometry) %>%
+  mutate(aff_bin = cut(hcf, 
+                       breaks = c(quantile(hcf, 
+                                           probs = seq(0, 1, by = 0.20), 
+                                           na.rm = TRUE)), 
+                       include.lowest = TRUE)) %>%
+  group_by(aff_bin) %>%
+  summarize(total_utilities = n(),
+            paperwork_10yr = mean(paperwork_violations_10yr), 
+            paperwork_5yr = mean(paperwork_violations_5yr), 
+            health_10yr = mean(healthbased_violations_10yr), 
+            health_5yr = mean(healthbased_violations_5yr), 
+            mean_mhi = mean(estimate_mhi, na.rm = T), 
+            mean_poc = mean(estimate_poc_alone_per, na.rm = T)) %>%
+  mutate(quantile = c("0-20","20-40","40-60","60-80","80-100", "NA"))
+
+
 # gotta map this: 
 aff_analysis_sf <- aff_analysis %>%
   st_as_sf() %>%
@@ -607,8 +807,15 @@ leaflet() %>%
 #   over the past 5 and 10 years. Mean values are particularly high 
 #   between 0.02-0.03 but that might be due to the outlier that had 
 #   ~182 (!!!!!) health-based violations over the past five years. 
+
 # - when plotting the data spatially, large cities generally 
 #   have low hcf, but rural communities have higher hcf. 
+
+# By quantiles: 
+# Utilities that fall into the highest quantile of hcf (0.019 - 0.0449) have 
+# the lowest MHI, generally lower %POC,  and the most health-based violations 
+# over the past five and ten years. 
+
 ```
 
 ## Bonus look at stats for cws in TX and comparisons across different scales: 
