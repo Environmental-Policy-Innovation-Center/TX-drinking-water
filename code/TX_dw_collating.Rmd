@@ -501,6 +501,67 @@ ppl14 <- ppl14[,names(ppl15_24)]
 ppl14_24 <- rbind(ppl14, ppl15_24)
 
 
+## Pulling data from CWSRFs: 
+# March 15, 2024
+sfy14 <- aws.s3::s3read_using(read.csv, 
+                     object = "s3://water-team-data/clean_data/srf_project_priority_lists/texas-cwsrf-ppls/tx-cw-sfy14-ppl-invited.csv") %>%
+  janitor::clean_names()%>%
+  select(-c("estimated_construction_start", "epa_cat")) %>%
+  mutate(sfy = "sfy14")%>%
+  rename(disadv = disadvantaged)
+sfy15 <- aws.s3::s3read_using(read.csv, 
+                              object = "s3://water-team-data/clean_data/srf_project_priority_lists/texas-cwsrf-ppls/tx-cw-sfy15-ppl-invited.csv") %>%
+  janitor::clean_names()  %>%
+  mutate(sfy = "sfy15")%>%
+  rename(disadv = disadvantaged)
+sfy16 <- aws.s3::s3read_using(read.csv, 
+                              object = "s3://water-team-data/clean_data/srf_project_priority_lists/texas-cwsrf-ppls/tx-cw-sfy16-ppl-invited.csv") %>%
+  janitor::clean_names()%>%
+  select(-c("epa_cat"))%>%
+  mutate(sfy = "sfy16")
+sfy17 <- aws.s3::s3read_using(read.csv, 
+                              object = "s3://water-team-data/clean_data/srf_project_priority_lists/texas-cwsrf-ppls/tx-cw-sfy17-ppl-invited.csv") %>%
+  janitor::clean_names() %>%
+  select(-c("epa_cat"))%>%
+  mutate(sfy = "sfy17")
+# missing sfy18 :-(
+sfy19 <- aws.s3::s3read_using(read.csv, 
+                              object = "s3://water-team-data/clean_data/srf_project_priority_lists/texas-cwsrf-ppls/tx-cw-sfy19-ppl-invited.csv") %>%
+  janitor::clean_names()%>%
+  select(-c("epa_cat"))%>%
+  mutate(sfy = "sfy19")
+# SFY 20 doesn't have information on which pwsids were invited: 
+sfy20 <- aws.s3::s3read_using(read.csv, 
+                              object = "s3://water-team-data/clean_data/srf_project_priority_lists/texas-cwsrf-ppls/tx-cw-sfy20-ppl.csv") %>%
+  janitor::clean_names() %>%
+  select(-c("epa_cat"))%>%
+  mutate(sfy = "sfy20") %>%
+  mutate(invited = "no_information_sfy20")%>%
+  relocate(invited, .after = rank)
+sfy21 <- aws.s3::s3read_using(read.csv, 
+                              object = "s3://water-team-data/clean_data/srf_project_priority_lists/texas-cwsrf-ppls/tx-cw-sfy21-ppl-invited.csv") %>%
+  janitor::clean_names()%>%
+  select(-c("epa_cat"))%>%
+  mutate(sfy = "sfy21")
+sfy22 <- aws.s3::s3read_using(read.csv, 
+                              object = "s3://water-team-data/clean_data/srf_project_priority_lists/texas-cwsrf-ppls/tx-cw-sfy22-ppl-invited.csv") %>%
+  janitor::clean_names() %>%
+  select(-c("epa_cat"))%>%
+  mutate(sfy = "sfy22") 
+sfy23 <- aws.s3::s3read_using(read.csv, 
+                              object = "s3://water-team-data/clean_data/srf_project_priority_lists/texas-cwsrf-ppls/tx-cw-sfy23-ppl-invited.csv") %>%
+  janitor::clean_names()%>%
+  select(-c("epa_cat"))%>%
+  mutate(sfy = "sfy23")
+sfy24 <- aws.s3::s3read_using(read.csv, 
+                              object = "s3://water-team-data/clean_data/srf_project_priority_lists/texas-cwsrf-ppls/tx-cw-sfy24-ppl-invited.csv") %>%
+  janitor::clean_names() %>%
+  select(-c("epa_cat"))%>%
+  mutate(sfy = "sfy24") 
+# bringing it all together! 
+cwsrf_ppl14_24 <- rbind(sfy14, sfy15, sfy16, sfy17, sfy19, sfy20, sfy21, sfy22, sfy23, sfy24)
+
+
 ## Danielle's SRF analysis: had to download it using a different method because 
 # it's an excel file that's stored on google drive - so it's not actually a 
 # google sheet. 
@@ -526,8 +587,10 @@ TX_financial <- list()
 TX_financial[[1]] <- TX_DAC
 TX_financial[[2]] <- ppl14_24
 TX_financial[[3]] <- cwsrf_by_rank
+TX_financial[[4]] <- cwsrf_ppl14_24
+
 names(TX_financial) <- c("TX_affordability_DAC", "TX_PPL_SFY14_24",
-                         "SRF_analysis")
+                         "SRF_analysis", "CWSRF_TX_PPL_SFY14_24")
 
 saveRDS(TX_financial, file="./data/raw/TX_financial_list.RData")
 put_object(
