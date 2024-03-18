@@ -68,11 +68,10 @@ aff <- fin$TX_affordability_DAC %>%
 # NOTE - pwsid is NOT UNIQUE to entity name! So you may have an entity name 
 # (Corix Utilities, for example), that matches to ~8 pwsids
 
-# oof this data is ~messy~ 
+# renaming and fixing pwsids: 
 iup <- fin$TX_PPL_SFY14_24 %>%
   rename(pwsid = pws_id)
 
-# gotta fix weird pwsids
 for(i in 1:nrow(iup)){
   # fill ones with 7 characters, which we can confidently fix: 
   if(nchar(iup$pwsid[i]) %in% c(7)) {
@@ -120,6 +119,7 @@ iup_tidy <-  merge(iup, iup_sab_names, by = c("entity", "population"),
 
 # really ~ 50 entities that didn't match nicely 
 iup_tidy %>%
+  filter(is.na(pwsid.y)) %>%
   count(entity)
 
 
@@ -204,9 +204,9 @@ etx_main_stats <- iup_tidy %>%
 etx_main_stats_long <- pivot_longer(etx_main_stats, total_applied:mean_dac)
 etx_main_stats_long$name <- as.factor(etx_main_stats_long$name)
 levels(etx_main_stats_long$name) <- c("Project Cost ($)", 
-                                   "GPR ($)",  
-                                   "Mean %DAC", 
-                                   "Number of Projects")
+                                      "GPR ($)",  
+                                      "Mean %DAC", 
+                                      "Number of Projects")
 
 ggplot(etx_main_stats_long, aes(x = sfy, y = value, group = invited, 
                             color = invited)) + 
@@ -224,6 +224,7 @@ ggplot(etx_main_stats_long, aes(x = sfy, y = value, group = invited,
 
 ## What races/ethnicities are served by what system? 
 ```{r}
+# grabbing race, ethnicity, and MHI stats from the census: 
 race_stats <- census %>%
   select(pwsid, estimate_white_alone_per:estimate_mixed_alone_per, 
          estimate_poc_alone_per, estimate_hisp_alone_per, estimate_mhi) %>%
@@ -543,7 +544,10 @@ ggplot(edu_level_analysis, aes(x = estimate_no_school_per,
 mhi_school <- edu_level_analysis %>%
   pivot_longer(estimate_no_school_per:estimate_prof_degree_per)
 mhi_school$name <- as.factor(mhi_school$name)
-levels(mhi_school$name) <- c("No Schooling", "Professional Degree")
+levels(mhi_school$name) <- c("Bachelors",
+                             "High School", 
+                             "No Schooling", 
+                             "Professional Degree")
 ggplot(mhi_school, aes(x = value, y = estimate_mhi)) + 
   geom_point() + 
   facet_wrap(~name) + 
@@ -574,7 +578,10 @@ edu_level_analysis_long_TX <- edu_level_analysis_TX %>%
 
 all_edu <- rbind(edu_level_analysis_long, edu_level_analysis_long_TX)
 all_edu$name <- as.factor(all_edu$name)
-levels(all_edu$name) <- c("No School", "Professional Degree")
+levels(all_edu$name) <- c("Bachelors",
+                             "High School", 
+                             "No Schooling", 
+                             "Professional Degree")
 ggplot(all_edu, aes(x = name, y = value, 
                     fill = flag)) + 
   geom_boxplot(alpha = 0.5) + 
@@ -1117,30 +1124,15 @@ aff_analysis %>%
             health_10yr = mean(healthbased_violations_10yr), 
             health_5yr = mean(healthbased_violations_5yr), 
             mean_mhi = mean(estimate_mhi, na.rm = T), 
-            mean_poc = mean(estimate_poc_alone_per, na.rm = T)) %>%
-  mutate(quantile = c("0-25","25-50","50-75","75-100", "NA")) %>%
-  relocate(quantile, .after = aff_bin)
+            mean_poc = mean(estimate_poc_alone_per, na.rm = T)) 
+  # mutate(quantile = c("0-25","25-50","50-75","75-100", "NA")) %>%
+  # relocate(quantile, .after = aff_bin)
 
 
 # gotta map this: 
 aff_analysis_sf <- aff_analysis %>%
   st_as_sf() %>%
   st_transform(., crs = st_crs(demo$census))
-
-# mapping the number of violations in TX: 
-viol_pal <- colorBin(
-  palette = c("#003049","#6b2c39", "#d62828", "#f77f00", "#fcbf49"),
-  bins = c(1, 5, 10, 50, 100, 200), 
-  na.color = "#c9c9bc")
-
-leaflet() %>%
-  addProviderTiles(providers$CartoDB.VoyagerNoLabels, group = "Toner Lite") %>%
-  addPolygons(data = viols,
-              fillOpacity = 0.9,
-              # fillOpacity = 0.9,
-              # stroke = TRUE,
-              # color = "black",
-              color = ~viol_pal(healthbased_violations_5yr))
 
 # mapping household cost factor across TX: 
 hcf_pal <- colorNumeric(
@@ -1216,7 +1208,6 @@ leaflet() %>%
               color = "black", 
               # color = ~mhi_pal(estimate_mhi),
               fillColor = ~mhi_pal(estimate_mhi),
-              
               weight = 1,
               label = paste0("pwsid: ", aff_analysis_sf$pwsid,
                              "; hcf: ", round(aff_analysis_sf$total_water_year, 2))) %>%
@@ -1293,13 +1284,16 @@ ggplot(aff_analysis, aes(x = total_water_year +
 census <- demo$census
 east_tx_cws <- census %>%
   filter(east_tx_flag == "yes")
+
 sum(census$estimate_total_pop, na.rm = T)
 sum(east_tx_cws$estimate_total_pop, na.rm = T)
 
+summary(census)
 summary(east_tx_cws)
 
 # how does this compare to all of Texas?
 census_vars <- c(total_pop = "B01003_001",
+                 # race and ethnicity stats: 
                  black_alone = "B02001_003", 
                  asian_alone = "B02001_005", 
                  white_alone = "B02001_002", 
@@ -1308,32 +1302,54 @@ census_vars <- c(total_pop = "B01003_001",
                  other_alone = "B02001_007", 
                  mixed_alone = "B02001_008",
                  hisp_alone = "B03003_003", 
+                 # MHI
                  mhi = "B19013_001", 
-                 under_6  = "B23008_002", 
-                 over_65 = "B09021_022", 
-                 only_english = "B99162_002", 
-                 other_lang = "B99162_003", 
+                 # labor force and unemployment: 
+                 laborforce = "B23025_003",  # universe: pop > 16
+                 laborforce_unemployed = "B23025_005", # universe: pop > 16
+                 # households below poverty level: 
+                 hh_total = "B17017_001",
+                 hh_below_pov = "B17017_002", 
+                 # age stats: 
+                 ageunder_5  = "B06001_002",
+                 age5_17 = "B06001_003", 
+                 age18_24 = "B06001_004",
+                 age25_34 = "B06001_005", 
+                 age35_44 = "B06001_006", 
+                 age45_54 = "B06001_007", 
+                 age55_59 = "B06001_008", 
+                 age60_61 = "B06001_009",
+                 # language spoken at home: 
+                 only_english = "B99162_002",  # universe: pop >5
+                 other_lang = "B99162_003", # universe: pop >5
+                 # education categories: 
                  no_school = "B15003_002", 
+                 high_school = "B15003_017", 
+                 bachelors = "B15003_022",
                  prof_degree = "B15003_024", 
-                 foreign = "B99051_005", 
-                 pov_level_at_above_150 = "B06012_004")
+                 # nationality: 
+                 foreign = "B99051_005")
 tx_census <- tidycensus::get_acs(
   geography = "state", 
   variables = census_vars, 
-  state = c("TX"), # also wanted to grab stats for Texarkana  
+  state = c("TX"), 
   year = 2021,
   geometry = TRUE
 )
 
 # stats for all of TX: 
 tx_wide <- pivot_wider(tx_census, 
-                           names_from = c("variable"), 
-                           values_from = c("estimate", "moe"))
+                       names_from = c("variable"), 
+                       values_from = c("estimate", "moe"))
 
 tx_wide <- tx_wide %>%
   select(starts_with(c("estimate"))) %>%
+  # calculating some columns where the denominator is not the total pop: 
+  mutate(estimate_laborforce_unemployed = ((estimate_laborforce_unemployed/estimate_laborforce)*100), 
+         estimate_hh_below_pov = ((estimate_hh_below_pov/estimate_hh_total)*100)) %>%
   # leaving out columns that are totals or mhi:
-  mutate_at(vars(!c("estimate_total_pop", "estimate_mhi")), 
+  mutate_at(vars(!c("estimate_total_pop", "estimate_mhi", 
+                    "estimate_laborforce_unemployed", "estimate_hh_below_pov")), 
             ~((./estimate_total_pop)*100)) %>%
   mutate(estimate_poc_alone = (100 - estimate_white_alone))
 
@@ -1342,7 +1358,7 @@ tx_wide <- tx_wide %>%
 etx_census <- tidycensus::get_acs(
   geography = "county", 
   variables = census_vars, 
-  state = c("TX"), # also wanted to grab stats for Texarkana  
+  state = c("TX"),
   year = 2021,
   geometry = TRUE
 )
@@ -1363,8 +1379,13 @@ etx_wide <- pivot_wider(east_tx_geo,
 
 etx_wide <- etx_wide %>%
   select(starts_with(c("estimate"))) %>%
+  # calculating some columns where the denominator is not the total pop: 
+  mutate(estimate_laborforce_unemployed = ((estimate_laborforce_unemployed/estimate_laborforce)*100), 
+         estimate_hh_below_pov = ((estimate_hh_below_pov/estimate_hh_total)*100)) %>%
   # leaving out columns that are totals or mhi:
-  mutate_at(vars(!c("estimate_total_pop", "estimate_mhi")), 
+  mutate_at(vars(!c("estimate_total_pop", "estimate_mhi", 
+                    "estimate_laborforce_unemployed", 
+                    "estimate_hh_below_pov")), 
             ~((./estimate_total_pop)*100)) %>%
   mutate(estimate_poc_alone = (100 - estimate_white_alone))
 

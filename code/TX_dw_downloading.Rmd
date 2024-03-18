@@ -56,6 +56,7 @@ sab <- get_sab(states = c("TX"), crs = ("ESRI:102296"))
 # census data - grabbing block group stats for now 
 # vars_acs <- load_variables(year = 2021, "acs5")
 census_vars <- c(total_pop = "B01003_001",
+                 # race and ethnicity stats: 
                  black_alone = "B02001_003", 
                  asian_alone = "B02001_005", 
                  white_alone = "B02001_002", 
@@ -64,19 +65,40 @@ census_vars <- c(total_pop = "B01003_001",
                  other_alone = "B02001_007", 
                  mixed_alone = "B02001_008",
                  hisp_alone = "B03003_003", 
+                 # MHI
                  mhi = "B19013_001", 
-                 under_6  = "B23008_002", 
-                 over_65 = "B09021_022", 
-                 only_english = "B99162_002", 
-                 other_lang = "B99162_003", 
+                 # labor force and unemployment: 
+                 laborforce = "B23025_003",  # universe: pop > 16
+                 laborforce_unemployed = "B23025_005", # universe: pop > 16
+                 # households below poverty level: 
+                 hh_total = "B17017_001",
+                 hh_below_pov = "B17017_002", 
+                 # age stats: 
+                 ageunder_5  = "B06001_002",
+                 age5_17 = "B06001_003", 
+                 age18_24 = "B06001_004",
+                 age25_34 = "B06001_005", 
+                 age35_44 = "B06001_006", 
+                 age45_54 = "B06001_007", 
+                 age55_59 = "B06001_008", 
+                 age60_61 = "B06001_009",
+                 # language spoken at home: 
+                 only_english = "B99162_002",  # universe: pop >5
+                 other_lang = "B99162_003", # universe: pop >5
+                 # education categories: 
                  no_school = "B15003_002", 
+                 high_school = "B15003_017", 
+                 bachelors = "B15003_022",
                  prof_degree = "B15003_024", 
-                 foreign = "B99051_005", 
-                 pov_level_at_above_150 = "B06012_004")
+                 # nationality: 
+                 foreign = "B99051_005")
 census <- tidycensus::get_acs(
   geography = "tract", 
   variables = census_vars, 
-  state = c("TX", "AR"), # also wanted to grab stats for Texarkana  
+  # also wanted to grab stats for neighboring states since the crosswalk
+  # depends on them for SABs close to the border: 
+  state = c("TX", "AR", "OK", "NM", 
+            "LA"), 
   year = 2021,
   geometry = TRUE
 )
@@ -84,13 +106,16 @@ census <- tidycensus::get_acs(
 # adding counties: 
 census_tidy <- census
 counties <- unlist(strsplit(census_tidy$NAME, split = ","))
-census_tidy$counties <- trimws(counties[grepl("County", counties)])
+census_tidy$counties <- trimws(counties[grepl("County|Parish", counties)])
 
 # adding state: 
 census_tidy <- census_tidy %>%
   mutate(state = case_when(
-    grepl("^[05]", GEOID) ~ "Arkansas", 
-    TRUE ~ "Texas"
+    str_detect(NAME, "Arkansas") ~ "Arkansas", 
+    str_detect(NAME, "Louisiana") ~ "Louisiana", 
+    str_detect(NAME, "Oklahoma") ~ "Oklahoma", 
+    str_detect(NAME, "New Mexico") ~ "New_Mexico", 
+    str_detect(NAME, "Texas") ~ "Texas"
   ))
 
 # running an intersection to JUST grab the pwsids in TX - since some of the 
@@ -132,22 +157,22 @@ census_wide <- pivot_wider(census_tidy,
 sab_cross_census <- merge(census_wide, 
                           tract_crosswalk, 
                           by.x = "GEOID", 
-                          by.y = "tract_geoid", all.y = T)
+                          by.y = "tract_geoid", all.x = T)
 
 # accounting for block weights by multiplying race stats by tract
 # parcel weights - purposefully leaving out mhi to calculate that using 
 # a weighted mean: 
 sab_cross_census_weight <- sab_cross_census %>% 
-  mutate(across(estimate_total_pop:estimate_prof_degree, ~.*tract_parcel_weight)) %>%
-  mutate(across(estimate_under_6:estimate_other_lang, ~.*tract_parcel_weight))
+  mutate(across(estimate_total_pop:estimate_hh_below_pov, ~.*tract_parcel_weight)) %>%
+  mutate(across(estimate_laborforce:estimate_other_lang, ~.*tract_parcel_weight))
 
 # sum across pwsid, rounding to control for decimal places, and estimate mhi 
 # using a weighted mean: 
 sab_census_crosswalked <- sab_cross_census_weight %>%
   group_by(pwsid) %>% 
-    summarize(across(estimate_total_pop:estimate_prof_degree, ~round(sum(.), 0)), 
+    summarize(across(estimate_total_pop:estimate_hh_below_pov, ~round(sum(.), 0)), 
               estimate_mhi = weighted.mean(estimate_mhi, tract_parcel_weight, na.rm = TRUE), 
-              across(estimate_under_6:estimate_other_lang, ~round(sum(.), 0))) 
+              across(estimate_laborforce:estimate_other_lang, ~round(sum(.), 0))) 
 
 # calculating percentage across census vars: 
 sab_census_per <- sab_census_crosswalked %>%
@@ -157,14 +182,22 @@ sab_census_per <- sab_census_crosswalked %>%
   mutate_at(vars(!c("estimate_total_pop", "estimate_mhi", "pwsid")), 
             ~((./estimate_total_pop)*100)) %>%
   relocate("pwsid") %>%
-  mutate(estimate_poc_alone = (100 - estimate_white_alone))
+  mutate(estimate_poc_alone = (100 - estimate_white_alone)) 
+
 # renaming columns for merging purposes: 
 colnames(sab_census_per) <- paste0(colnames(sab_census_per), "_per")
 
 # merging this back so we have the original numbers: 
 sab_census <- merge(sab_census_crosswalked, sab_census_per,
                     by.x = "pwsid", by.y = "pwsid_per") %>%
-  select(-c("estimate_total_pop_per", "estimate_mhi_per"))
+  select(-c("estimate_total_pop_per", "estimate_mhi_per")) %>%
+  # removing columns where percentages don't actually mean anything
+  # i.e., total number of households or labor force 
+  select(-c("estimate_hh_total_per")) %>%
+  # recalculating % households in poverty and % labor force unemployed
+  mutate(estimate_hh_below_pov_per = (estimate_hh_below_pov/estimate_hh_total*100), 
+         estimate_laborforce_unemployed_per = (estimate_laborforce_unemployed/estimate_laborforce)*100)
+
 
 # combining to service area boundary dataset: 
 sab_tidy <- all_tx_sabs
