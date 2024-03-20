@@ -41,8 +41,8 @@ _______________________________________________________________________________
 ```{r data collection}
 # SOP for TX-specific data: ####################################################
 # PWSIDs should have "TX" at the beginning of them 
-# All data must have either pwsid, aquifer, census id (block group/tract), and well number (or any match-able 
-# columns)
+# All data must have either pwsid, aquifer, census id (block group/tract), and 
+# well number (or any match-able columns)
 # Group data collections by category (demographic, environmental, financial, etc. )
 # All data should be in wide format 
 # All data should have a pulled link to note where it came from
@@ -51,9 +51,9 @@ _______________________________________________________________________________
 
 ## Demographic #################################################################
 # grabbing sabs: 
-sab <- get_sab(states = c("TX"), crs = ("ESRI:102296"))
+sab <- get_sab(states = c("TX"), crs = ("ESRI:102339"))
 
-# census data - grabbing block group stats for now 
+# census data - grabbing at the tract level
 # vars_acs <- load_variables(year = 2021, "acs5")
 census_vars <- c(total_pop = "B01003_001",
                  # race and ethnicity stats: 
@@ -73,7 +73,7 @@ census_vars <- c(total_pop = "B01003_001",
                  # households below poverty level: 
                  hh_total = "B17017_001",
                  hh_below_pov = "B17017_002", 
-                 # age stats: 
+                 # age cats: 
                  ageunder_5  = "B06001_002",
                  age5_17 = "B06001_003", 
                  age18_24 = "B06001_004",
@@ -95,10 +95,9 @@ census_vars <- c(total_pop = "B01003_001",
 census <- tidycensus::get_acs(
   geography = "tract", 
   variables = census_vars, 
-  # also wanted to grab stats for neighboring states since the crosswalk
-  # depends on them for SABs close to the border: 
-  state = c("TX", "AR", "OK", "NM", 
-            "LA"), 
+  # grab stats for neighboring states since the crosswalk
+  # uses them for SABs close to the border: 
+  state = c("TX", "AR", "OK", "NM", "LA"), 
   year = 2021,
   geometry = TRUE
 )
@@ -118,24 +117,23 @@ census_tidy <- census_tidy %>%
     str_detect(NAME, "Texas") ~ "Texas"
   ))
 
-# running an intersection to JUST grab the pwsids in TX - since some of the 
-# sabs intersected have the state_code == "TX" but actually don't exist in TX: 
+# running an intersection to JUST grab the pwsids in or close to the border of 
+# TX - since some state_code == "TX" don't exist in TX: 
 tx_only <- census_tidy %>% filter(state == "Texas")
 tx <- st_union(tx_only) %>%
-  # adding a 0.01dd buffer to capture ones in Texarkana 
   st_buffer(., dist = 0.01)
 sab_sf <- st_transform(sab, crs = st_crs(tx))
 tx_sabs <- st_intersection(sab_sf, tx)
 # NOTE: there are ~ four pwsids (one of which starts with "NY") that have 
 # actual boundaries in TX. 
+
 # filtering for intersected SABs to retain original geographies: 
 all_tx_sabs <- sab_sf %>% filter(pwsid %in% tx_sabs$pwsid)
-# making note the of the pwsids located in TX: 
 pwsids <- unique(all_tx_sabs$pwsid)
 
 
-# grabbing tract crosswalk: 
-tract_crosswalk <-aws.s3::s3read_using(read.csv, 
+## crosswalking census data: 
+tract_crosswalk <- aws.s3::s3read_using(read.csv, 
                                          object = "s3://tech-team-data/pws_crosswalk/pws_census_tract_weighted_crosswalk.csv") %>%
   select(-X) %>%
   filter(pwsid %in% pwsids) %>%
@@ -145,23 +143,20 @@ tract_crosswalk <-aws.s3::s3read_using(read.csv,
            str_length(tract_geoid) == 10 ~ paste0(0, tract_geoid),
            TRUE ~ tract_geoid
          )) %>%
-  # some tract geoids in the crosswalk are NAs - assuming these are errors 
+  # there are 7 tract geoids in the crosswalk are NAs - assuming these are errors? 
   filter(!(is.na(tract_geoid)))
 
-
-# crosswalking census tract information with pwsids: 
 census_wide <- pivot_wider(census_tidy, 
                            names_from = c("variable"), 
                            values_from = c("estimate", "moe"))  
-# crosswalking census stats: 
+
 sab_cross_census <- merge(census_wide, 
                           tract_crosswalk, 
                           by.x = "GEOID", 
                           by.y = "tract_geoid", all.x = T)
 
-# accounting for block weights by multiplying race stats by tract
-# parcel weights - purposefully leaving out mhi to calculate that using 
-# a weighted mean: 
+# multiplying census stats by tract weights - purposefully leaving out mhi to 
+# calculate that using a weighted mean: 
 sab_cross_census_weight <- sab_cross_census %>% 
   mutate(across(estimate_total_pop:estimate_hh_below_pov, ~.*tract_parcel_weight)) %>%
   mutate(across(estimate_laborforce:estimate_other_lang, ~.*tract_parcel_weight))
@@ -170,24 +165,22 @@ sab_cross_census_weight <- sab_cross_census %>%
 # using a weighted mean: 
 sab_census_crosswalked <- sab_cross_census_weight %>%
   group_by(pwsid) %>% 
-    summarize(across(estimate_total_pop:estimate_hh_below_pov, ~round(sum(.), 0)), 
+    summarize(across(estimate_total_pop:estimate_hh_below_pov, ~round(sum(.), 2)), 
               estimate_mhi = weighted.mean(estimate_mhi, tract_parcel_weight, na.rm = TRUE), 
-              across(estimate_laborforce:estimate_other_lang, ~round(sum(.), 0))) 
+              across(estimate_laborforce:estimate_other_lang, ~round(sum(.), 2))) 
 
-# calculating percentage across census vars: 
+# calculating percentage: 
 sab_census_per <- sab_census_crosswalked %>%
   as.data.frame(.) %>%
   select(starts_with(c("estimate", "pwsid"))) %>%
-  # leaving out columns that are totals or mhi:
+  # leaving out columns that shouldn't be divided: 
   mutate_at(vars(!c("estimate_total_pop", "estimate_mhi", "pwsid")), 
             ~((./estimate_total_pop)*100)) %>%
   relocate("pwsid") %>%
   mutate(estimate_poc_alone = (100 - estimate_white_alone)) 
-
-# renaming columns for merging purposes: 
 colnames(sab_census_per) <- paste0(colnames(sab_census_per), "_per")
 
-# merging this back so we have the original numbers: 
+# merging this back so we have the original census numbers as well:  
 sab_census <- merge(sab_census_crosswalked, sab_census_per,
                     by.x = "pwsid", by.y = "pwsid_per") %>%
   select(-c("estimate_total_pop_per", "estimate_mhi_per")) %>%
@@ -198,15 +191,15 @@ sab_census <- merge(sab_census_crosswalked, sab_census_per,
   mutate(estimate_hh_below_pov_per = (estimate_hh_below_pov/estimate_hh_total*100), 
          estimate_laborforce_unemployed_per = (estimate_laborforce_unemployed/estimate_laborforce)*100)
 
-
 # combining to service area boundary dataset: 
 sab_tidy <- all_tx_sabs
 sab_census <- merge(sab_tidy, as.data.frame(sab_census), 
                     by = "pwsid", all.x = T)
 
+
 # creating a flag for when the county is within East TX: 
-# TODO: ask funders which pwsids they care about - some were captured in the 
-# intersection but others are fairly close to the border 
+# TODO: ask funders which pwsids they care about - some are fairly close to the 
+# border 
 east_tx <- read.csv("./data/raw/east_TX_counties.csv") %>%
   select(-X) %>%
   mutate(county_tidy = paste0(county_name, " County"))
@@ -219,9 +212,10 @@ east_tx_sabs <- st_intersection(sab_census, east_tx_geo)
 east_tx_pwsids <- unique(east_tx_sabs$pwsid)
 # creating flag: 
 sab_census_flag <- sab_census %>%
-  mutate(east_tx_flag = case_when(pwsid %in% east_tx_pwsids ~ "yes",
-                                  TRUE ~ "no")
-         ) %>%
+  mutate(east_tx_flag = case_when(
+    pwsid %in% east_tx_pwsids ~ "yes",
+    TRUE ~ "no")
+  ) %>%
   relocate(east_tx_flag, .after = "county_served")
 
 # SAB & Census - writing this to s3: 
@@ -234,6 +228,7 @@ put_object(
   bucket = "tech-team-data",
 )
 ```
+
 ## Environmental
 ```{r}
 ## Environmental ###############################################################
@@ -244,11 +239,8 @@ download.file("https://www.twdb.texas.gov/groundwater/data/GWDBDownload.zip",
               destfile = paste0(file_loc, ".zip"))
 unzip(zipfile = paste0(file_loc, ".zip"), exdir = file_loc) 
 file.remove(paste0(file_loc, ".zip"))
-## TODO: add code that downloads & uploads entire folder to aws
-# put_folder(
-#   folder = "./data/raw/TX_GWDB/GWDBDownload/",
-#   bucket = "s3://tech-team-data/state-drinking-water/TX/raw/TX_GWDB_test"
-# )
+## TODO: add code that downloads & uploads entire folder to aws (HOLD 
+# on this since we don't actually use this dataset in the analysis)
 
 ## Reservoir levels: https://www.waterdatafortexas.org/reservoirs/statewide
 # downloaded Jan 24 2024 
@@ -308,6 +300,7 @@ put_object(
   bucket = "tech-team-data",
 )
 ```
+
 ## Water Delivery System 
 ```{r}
 ## Water Delivery System #######################################################
@@ -324,9 +317,11 @@ put_object(
   bucket = "tech-team-data",
 )
 ```
+
 ## Financial
 ```{r}
-## TX DAC - whether they are likely to qualify for DAC status - requires pulling water affordability data and combining this with mhi. 
+## TX DAC - whether they are likely to qualify for DAC status - requires pulling 
+# water affordability data and combining this with mhi. 
 ## Water rates: https://raw.githubusercontent.com/NIEPS-Water-Program/water-affordability/main/www/data/all_rates_table_current.csv
 # downloaded Jan 31 2024
 raw_link <- "https://raw.githubusercontent.com/NIEPS-Water-Program/water-affordability/main/www/data/all_rates_table_current.csv"
@@ -334,12 +329,14 @@ temp_file <- tempfile(fileext = ".csv")
 water_rates <- GET(raw_link, write_disk(path = temp_file))
 water_rates <- read.csv(temp_file) %>%
   janitor::clean_names()
-# filtering for just TX data, and household use == 6000 
+
+# filtering for just TX data, and household use == 6000 gal/month
 tx_rates <- water_rates[grepl("TX", water_rates$pwsid),] %>%
   filter(hh_use == 6000) %>%
   select(c("pwsid", "category", "hh_use", "total_water", "total_sewer")) %>%
   mutate(total_water_year = total_water*12, 
          total_sewer_year = total_sewer*12)
+
 # need to merge this with mhi: 
 mhi <- aws.s3::s3read_using(st_read, 
                            object = "state-drinking-water/TX/raw/TX_sab_census.geojson",
@@ -361,7 +358,6 @@ put_object(
   object = "/state-drinking-water/TX/raw/TX_DAC.geojson",
   bucket = "tech-team-data",
 )
-# NOTE: employment and population trends can be added to modify HCF. 
 ```
 
 ## Requires manual download 
@@ -373,6 +369,7 @@ cvi <- readxl::read_excel("./data/raw/MasterCVIDataset_Oct2023.xlsx",
            sheet = "Domain CVI Values") %>%
   filter(State == "TX") %>%
   janitor::clean_names()
+
 # writing to aws: 
 tmp <- tempfile()
 write.csv(cvi, file = paste0(tmp, ".csv"))
@@ -393,6 +390,7 @@ files <- list.files(folder)
 year_use_estimates <- lapply(paste0(folder, files), read.csv, header = TRUE)
 historic_use <- do.call(rbind, year_use_estimates) %>%
   janitor::clean_names()
+
 # writing to aws: 
 tmp <- tempfile()
 write.csv(historic_use, file = paste0(tmp, ".csv"))
@@ -403,15 +401,18 @@ put_object(
   bucket = "tech-team-data",
 )
 
+
 ## Water loss audits: https://www.twdb.texas.gov/conservation/municipal/waterloss/historical-annual-report.asp
 # downloaded Jan 24 2024
 # This requires merging in downloaded file that is stored in s3 as 
 # TX_historic_use_estimates.csv, looping over to cleaning and then merge 
 
+
 ## CDC SVI: https://www.atsdr.cdc.gov/placeandhealth/svi/interactive_map.html
 # downloaded Jan 26 2024
 # This requires merging in downloaded file that is stored in s3 as 
 # TX_SVI_2020.csv
+
 
 ## EJ screen: https://gaftp.epa.gov/EJScreen/2023/2.22_September_UseMe/EJSCREEN_2023_Tracts_StatePct_with_AS_CNMI_GU_VI.csv.zip
 # downloaded Feb 13 2024
@@ -419,15 +420,16 @@ put_object(
 # change as the data are updated. 
 # NOTE: the R package and API are not very user-friendly. 
 file_loc <- "./data/raw/ejscreen"
-download.file("https://gaftp.epa.gov/EJScreen/2023/2.22_September_UseMe/EJSCREEN_2023_Tracts_StatePct_with_AS_CNMI_GU_VI.csv.zip", 
-              destfile = paste0(file_loc, ".zip"))
+download.file("https://gaftp.epa.gov/EJScreen/2023/2.22_September_UseMe/EJSCREEN_2023_Tracts_StatePct_with_AS_CNMI_GU_VI.csv.zip", destfile = paste0(file_loc, ".zip"))
 unzip(zipfile = paste0(file_loc, ".zip"), exdir = file_loc) 
 file.remove(paste0(file_loc, ".zip"))
+
 # tidying and querying for TX: 
 TX_ejscreen <- read.csv(paste0(file_loc, "/", list.files(file_loc))) %>%
   filter(ST_ABBREV == "TX") %>%
   janitor::clean_names()
 write.csv(TX_ejscreen, paste0(file_loc, "/", "tx_ejscreen.csv"))
+
 # writing to aws: 
 put_object(
   file = paste0(file_loc, "/", "tx_ejscreen.csv"),

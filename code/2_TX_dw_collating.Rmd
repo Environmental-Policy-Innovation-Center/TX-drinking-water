@@ -83,6 +83,7 @@ put_object(
   bucket = "tech-team-data",
 )
 ```
+
 ## Environmental
 ```{r}
 ## Environmental ###############################################################
@@ -257,6 +258,7 @@ put_object(
   bucket = "tech-team-data",
 )
 ```
+
 ## Water Delivery System
 ```{r}
 ## Water Delivery System ######################################################
@@ -405,6 +407,7 @@ put_object(
   bucket = "tech-team-data",
 )
 ```
+
 ## Financial 
 ```{r}
 ## Financial ##################################################################
@@ -599,22 +602,3 @@ put_object(
   bucket = "tech-team-data",
 )
 ```
-
-NEXT STEPS: 
-questions: 
-- Well numbers to pwsids 
-- % people on well water in east TX 
-- do people think about water at the county scale?
-- Incorporating Danielle's SRF analysis 
-- TX SRF data - next Friday 
-
-steps: 
-- adding this to a list and the onto S3
-- breaking collection & merging script 
-- function that takes list from s3 and queries for categories 
-- crosswalk data frame included as metadata in the list 
-
-data collection 
-- nixing cvi
-- incorporating CEJST specific metrics regarding whether disadv or not 
-- incorporate EJ screen (R package and then API) regarding water-specific hazards 
