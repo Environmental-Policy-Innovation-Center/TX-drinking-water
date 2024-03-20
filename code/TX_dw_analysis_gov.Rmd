@@ -2,6 +2,7 @@
 title: "TX Drinking Water Data Analysis - Hydrology"
 author: "Gabe Watson"
 date: "2024-02-27"
+laste_updated: "2024-03-20"
 output: html_document
 ---
 
@@ -57,7 +58,7 @@ owner_type_code <- c("F","L","M","N","P","S")
 owner_type_description <-c("Federal Government","Local Government","Public/Private","Native American","Private","State Government")
 owner_type_merge <- data.frame(owner_type_code,owner_type_description)
 
-## Note adding in violation_summary from TX_dw_analysis_hydrology
+
 ## Filtering to only TX systems
 ownership <- demo$census %>%
              data.frame()%>%
@@ -89,6 +90,7 @@ ownershipsummary <- ownership %>%
                     mutate(percent_systems = owner_type_count / sum(owner_type_count))
 
 ## Quick Summary ##
+## For all of TEXAS! 
 ## 61% of systems are local public, but serve 91% of population, private systems comprise 38% of systems and 9% of population.
 ## Public systems are slightly lower income (77k priv vs 74k), more poc (26% vs 21%), and more hb violations (1.6 vs 1.3), BUT 
 ## Private systems have 17.2 pwork violations vs 5.7 for public...
@@ -216,46 +218,49 @@ ggplot(system, aes(x = estimate_total_pop, color = "red")) +
 ## -  As population density and population goes down, health based violations and especially paperwork violations go up
 ## - Seeing some pattern where medium density, pop, and size have the fewest hb violations. 
 
-## charts hb 
+## pop_density x hb x mhi 
 ggplot(density_cats, aes(x=pop_density_cats,y= healthbased_violations_10yr,fill = estimate_mhi))+
   geom_point(shape = 21, color = "black", size = 3)+
    scale_fill_gradient(low = "yellow", high = "red", na.value = NA)+
   theme_classic()
 
+## pop_density x hb x poc 
 ggplot(density_cats, aes(x=pop_density_cats,y= healthbased_violations_10yr,fill = estimate_poc_alone_per))+
   geom_point(shape = 21, color = "black", size = 3)+
    scale_fill_gradient(low = "yellow", high = "red", na.value = NA)+
   theme_classic()
 
-
+## pop x hb x mhi 
 ggplot(pop_cats, aes(x=pop_cats,y= healthbased_violations_10yr, fill = estimate_mhi))+
    geom_point(shape = 21, color = "black", size = 3)+
    scale_fill_gradient(low = "yellow", high = "red", na.value = NA)+
   theme_classic()
 
-## MHI
+## area x hb x mhi 
 ggplot(area_cats, aes(x=area_cats,y= healthbased_violations_10yr, fill = estimate_mhi))+
   geom_point(shape = 21, color = "black", size = 3)+
    scale_fill_gradient(low = "yellow", high = "red", na.value = NA)+
   theme_classic()
 
-## POC
+## area x hb x poc 
 ggplot(area_cats, aes(x=area_cats,y= healthbased_violations_10yr, fill = estimate_poc_alone_per))+
   geom_point(shape = 21, color = "black", size = 3)+
    scale_fill_gradient(low = "yellow", high = "red", na.value = NA)+
   theme_classic()
 
-# charts pw
+## density x pw x poc 
 ggplot(density_cats, aes(x=pop_density_cats,y= paperwork_violations_10yr, fill = estimate_mhi))+
   geom_point(shape = 21, color = "black", size = 3)+
    scale_fill_gradient(low = "yellow", high = "red", na.value = NA)+
   theme_classic()
 
+## pop x pw x mhi 
 ggplot(pop_cats, aes(x=pop_cats,y= paperwork_violations_10yr, fill = estimate_mhi))+
     geom_point(shape = 21, color = "black", size = 3)+
    scale_fill_gradient(low = "yellow", high = "red", na.value = NA)+
   theme_classic()
 
+## area x pw x mhi 
 ggplot(area_cats, aes(x=area_cats,y= paperwork_violations_10yr, fill = estimate_mhi))+
    geom_point(shape = 21, color = "black", size = 3)+
    scale_fill_gradient(low = "yellow", high = "red", na.value = NA)+
@@ -288,7 +293,7 @@ ggplot(data=summary_pop, aes(x=pop_catagories, y=healthbased_violations_10yr, fi
 ## system size pw 
 ggplot(data=summary_pop, aes(x=pop_catagories, y=paperwork_violations_10yr, fill=pop_catagories)) + 
   geom_bar(stat = "identity", color="black")+
-  geom_text(aes(label=round(healthbased_violations_10yr, digits = 2)), vjust=-0.5)+
+  geom_text(aes(label=round(paperwork_violations_10yr, digits = 2)), vjust=-0.5)+
   theme_minimal()+
   ggtitle("East Texas CWS System Size by Paperwork Violations - 10 years")
 
@@ -296,6 +301,7 @@ ggplot(data=summary_pop, aes(x=pop_catagories, y=paperwork_violations_10yr, fill
 ```
 
 ## Spatial Analylsis
+## Note: This analysis has been sunsetted in favor of EmmaLi's 
 
 ```{r}
 ## Data Prep 
