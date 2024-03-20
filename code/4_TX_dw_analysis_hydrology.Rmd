@@ -11,6 +11,8 @@ library(leaflet)
 library(sf)
 library(aws.s3)
 library(googledrive)
+# function to get enforcement actions: 
+source("./code/functions/get_SDWIS_enforcement.R")
 ```
 
 ## Loading data lists 
@@ -41,6 +43,16 @@ crosswalk <- aws.s3::s3read_using(read.csv,
          )) %>%
   # some tract geoids in the crosswalk are NAs - assuming these are errors 
   filter(!(is.na(tract_geoid)))
+```
+
+# East TX flag: 
+```{r}
+etx_pwsid <- demo$census %>%
+  filter(east_tx_flag == "yes") %>%
+  distinct(pwsid)
+# NOTE: since the data here required some more fiddling, I've opted to fold 
+# comparisons with East TX within each code block - otherwise this chunk would 
+# be full of code for matching strings/filling pwsids, etc. 
 ```
 
 ## Does the system have adequate water supply?
@@ -120,6 +132,29 @@ leaflet() %>%
             title = "pop change",
             opacity = 1)
 
+
+# checking this out for east TX:
+etx <- read.csv("./data/raw/east_TX_counties.csv") %>%
+  select(-X) %>%
+  mutate(county_name = toupper(county_name))
+
+pop_etx <- pop_sf %>%
+  filter(wug_county %in% etx$county_name)
+leaflet() %>%
+  addProviderTiles(providers$CartoDB.VoyagerNoLabels,
+                   group = "Toner Lite") %>%
+  addPolygons(data = pop_etx,
+              opacity = 9,
+              color = ~pop_pal(pop_change),
+              weight = 1,
+              label = paste0("county: ", pop_etx$wug_county,
+                "; pop change: ", pop_etx$pop_change)) %>%
+  addLegend("bottomright",
+            pal = pop_pal,
+            values = c(0, 100, 500, 1000, 50000, 100000, 500000, 1000000, 1564476),
+            title = "pop change",
+            opacity = 1)
+
 # Combining demand, supplies, and needs stats 
 dem <- proj_dem %>%
   select(wug_county, entity_name, wug_type, d2020:d2070) %>%
@@ -187,27 +222,97 @@ county_needs <- needs %>%
   st_as_sf() %>%
   st_transform(., crs = st_crs(census))
 
+
+# just looking at 2070: 
+county_needs <- needs %>%
+  filter(wug_type == "MUNICIPAL") %>%
+  filter(decade == "2070") %>% 
+  group_by(wug_county) %>%
+  summarize(mean_needs = sum(needs))  %>%
+  left_join(counties) %>%
+  st_as_sf() %>%
+  st_transform(., crs = st_crs(census))
+
 # plotting to see projected population change by county: 
 needs_pal <- colorNumeric(
   palette = viridis::viridis(8),
-  domain = county_needs$net_needs)
+  domain = county_needs$mean_needs)
 
 leaflet() %>%
   addProviderTiles(providers$CartoDB.VoyagerNoLabels,
                    group = "Toner Lite") %>%
   addPolygons(data = county_needs,
               opacity = 9,
-              color = ~needs_pal(net_needs),
+              color = ~needs_pal(mean_needs),
               weight = 1,
               label = paste0("county: ", county_needs$wug_county,
-                "; net needs: ", round(county_needs$net_needs, 2))) %>%
+                "; net needs: ", round(county_needs$mean_needs, 2))) %>%
   addLegend("bottomright",
             pal = needs_pal,
-            values = county_needs$net_needs,
-            title = "Net Needs",
+            values = county_needs$mean_needs,
+            title = "Water Needs (2070)",
             opacity = 1)
 
-# Overall findings: 
+# looking at this in the form of a bar chart: 
+# needs: 
+proj_needs <- wds$TXSWP_needs
+proj_needs <- proj_needs %>%
+  group_by(wug_county) %>%
+  filter(wug_type == "MUNICIPAL") %>%
+  summarize(mean_n2020 = sum(n2020), 
+            mean_n2070 = sum(n2070)) 
+proj_needs <- proj_needs[order(proj_needs$mean_n2070, decreasing = TRUE), ]
+top_counties <- proj_needs[1:50,]$wug_county
+
+ggplot(proj_needs %>% filter(wug_county %in% top_counties), 
+       aes(x = reorder(wug_county, -mean_n2070), y = mean_n2070)) + 
+  geom_bar(stat = "identity", fill = "lightblue") + 
+  geom_bar(aes(y = mean_n2020), fill = "pink", stat = "identity") +
+  coord_flip() + 
+  theme_minimal() + 
+  labs(y = "Municipal Water Needs (acre-feet)", x = "County")
+
+# zooming in on East TX: 
+etx_proj_needs <- wds$TXSWP_needs %>%
+  group_by(wug_county) %>%
+  filter(wug_type == "MUNICIPAL") %>%
+  filter(wug_county %in% etx$county_name) %>%
+  summarize(mean_n2020 = sum(n2020), 
+            mean_n2070 = sum(n2070)) 
+etx_proj_needs <- etx_proj_needs[order(etx_proj_needs$mean_n2070, decreasing = TRUE), ]
+top_counties <- etx_proj_needs[1:20,]$wug_county
+
+ggplot(etx_proj_needs %>% filter(wug_county %in% top_counties), 
+       aes(x = reorder(wug_county, -mean_n2070), y = mean_n2070)) + 
+  geom_bar(stat = "identity", fill = "lightblue") + 
+  geom_bar(aes(y = mean_n2020), fill = "pink", stat = "identity") +
+  coord_flip() + 
+  theme_minimal() + 
+  labs(y = "Municipal Water Needs (acre-feet)", x = "County")
+
+# plotting to see projected population change by county: 
+etx_county_needs <- county_needs %>%
+  filter(wug_county %in% etx$county_name) 
+needs_pal <- colorNumeric(
+  palette = viridis::viridis(8),
+  domain = etx_county_needs$mean_needs)
+
+leaflet() %>%
+  addProviderTiles(providers$CartoDB.VoyagerNoLabels,
+                   group = "Toner Lite") %>%
+  addPolygons(data = etx_county_needs,
+              opacity = 9,
+              color = ~needs_pal(mean_needs),
+              weight = 1,
+              label = paste0("county: ", etx_county_needs$wug_county,
+                "; net needs: ", round(etx_county_needs$mean_needs, 2))) %>%
+  addLegend("bottomright",
+            pal = needs_pal,
+            values = etx_county_needs$mean_needs,
+            title = "Water Needs (2070)",
+            opacity = 1)
+
+# Overall findings:: 
 #   - Out of all six possible water use types, municipal has the largest
 #     increase in projected needs from 2020 - 2070. The county with the 
 #     largest overall municipal water needs is Harris (i.e., Houston), 
@@ -236,8 +341,9 @@ leaflet() %>%
 
 ## Has the system reported any water quality violations?
 ```{r}
-# grabbing sdiws violations by pwsid: 
-viols <- keys$analysis_keys
+viols <- keys$analysis_keys 
+etx_viols <- viols %>%
+  filter(pwsid %in% etx_pwsid$pwsid)
 
 # creating a quick graph to investigate results: 
 viol_long <- viols %>%
@@ -251,12 +357,42 @@ viol_long %>%
   filter(value > 0) %>% 
   summarize(total = length(unique(pwsid)))
 
+# quick histogram: 
+ggplot(viols, aes(x = healthbased_violations_5yr)) + 
+  geom_histogram(position = "identity", 
+                 alpha = 0.5, 
+                 bins = 12)  + 
+  geom_histogram(data = etx_viols, fill = "pink", 
+                 bins = 12)
+
 # checking out trends with healthbased viols over the past 5 years and 
 # relationship to % POC and MHI
-ggplot(viols, aes(x = estimate_poc_alone_per, y = estimate_mhi)) + 
+ggplot(viols, 
+       aes(x = estimate_poc_alone_per, 
+           y = estimate_mhi)) + 
   geom_point() +
   geom_point(data = viols %>% filter(healthbased_violations_5yr > 0), 
-             color = "red")
+             color = "red") + 
+  geom_smooth(color = "grey") + 
+  theme_minimal() + 
+  labs(x = "% POC", y = "MHI") 
+
+mean(viols$healthbased_violations_5yr)
+median(viols$healthbased_violations_5yr)
+
+ggplot(etx_viols, 
+       aes(x = estimate_poc_alone_per, 
+           y = estimate_mhi)) + 
+  geom_point() +
+  geom_point(data = etx_viols %>% filter(healthbased_violations_5yr > 0), 
+             color = "red") + 
+  geom_smooth(color = "grey") + 
+  theme_minimal() + 
+  labs(x = "% POC", y = "MHI") 
+
+mean(etx_viols$healthbased_violations_5yr)
+median(etx_viols$healthbased_violations_5yr)
+
 
 # grabbing stats for 5yr health-based violation bins: 
 viols %>%
@@ -299,6 +435,30 @@ ggplot(viol_long, aes(x = estimate_mhi, y = value, color = name)) +
   labs(x = "MHI", y = "Number of Violations") +
   ggtitle("SDWIS Violations By Median Household Income")
 
+# mapping
+viol_pal <- colorBin(
+  palette = c("#003049","#6b2c39", "#d62828", "#f77f00", "#fcbf49"),
+  bins = c(1, 5, 10, 50, 100, 200), 
+  na.color = "#c9c9bc")
+
+leaflet() %>%
+  addProviderTiles(providers$CartoDB.VoyagerNoLabels, group = "Toner Lite") %>%
+  addPolygons(data = viols,
+              fillOpacity = 0.9,
+              # fillOpacity = 0.9,
+              # stroke = TRUE,
+              # color = "black",
+              color = ~viol_pal(healthbased_violations_5yr),
+              # fillColor = ~viol_pal(healthbased_violations_5yr),
+              weight = 1,
+              label = paste0("pwsid: ", viols$pwsid,
+                "; cvi: ", round(viols$healthbased_violations_5yr, 2))) %>%
+  addLegend("bottomright",
+            pal = viol_pal,
+            values = viols$healthbased_violations_5yr,
+            title = "Health Viols, 5yr",
+            opacity = 1)
+
 
 # Quick Summary: 
 # 4542 pwsids in total 
@@ -331,12 +491,8 @@ ggplot(viol_long, aes(x = estimate_mhi, y = value, color = name)) +
 # this doesn't really have the information that I need, so I created another 
 # function 
 # TODO: add this enforcement action function to the R package: 
-sdwis <- wds$sdwis
-
-# grabbing the raw enforcement actions from SDWIS, which should be 
-# fully updated: 
-source("./code/functions/get_SDWIS_enforcement.R")
-sdwis_enf <- get_SDWIS_enforcement(pwsid = demo$census$pwsid)
+# sdwis <- wds$sdwis
+sdwis_enf <- get_SDWIS_enforcement(pwsid = census$pwsid)
 
 # summarizing data by five and ten years: 
 enf_summary_5yr <- sdwis_enf %>%
@@ -370,15 +526,30 @@ sdwis_enf_all %>%
 # plotting enforcement actions by violation type: 
 enf_viol_summary <- sdwis_enf_all %>%
   pivot_longer(paperwork_violations_10yr:total_violations_5yr)
-
-ggplot(enf_viol_summary, aes(x = enf_5yr, 
-                          y = value, 
-                          color = estimate_mhi)) + 
+enf_viol_summary$name <- as.factor(enf_viol_summary$name)
+levels(enf_viol_summary$name) <- c("Health, 10yr", 
+                                   "Health, 5yr", 
+                                   "Non-Health, 10yr", 
+                                   "Non-Health, 5yr", 
+                                   "Total, 10yr", 
+                                   "Total, 5yr") 
+enf_viol_summary <- enf_viol_summary %>%
+  filter(name %in% c("Health, 5yr", "Non-Health, 5yr", 
+                     "Total, 5yr"))
+ggplot(enf_viol_summary,
+         # filter(east_tx_flag == "yes"), 
+       aes(x = enf_5yr, 
+                             y = value, 
+                             group = name, 
+                             color = estimate_mhi, 
+                             size = estimate_poc_alone_per)) + 
   geom_point() + 
   geom_smooth(color = "grey") + 
   facet_wrap(~name, scales = "free") + 
+  scale_color_continuous(name = "MHI") + 
+  scale_size_continuous(name = "%POC") + 
   theme_minimal() +
-  labs(x = "Enforcement Actions, 5yr", y = "Violation Type")
+  labs(x = "Enforcement Actions, 5yr", y = "# by Violation Type")
 
 # checking out just health-based violations in relation to POC and MHI:
 ggplot(sdwis_enf_all, aes(x = enf_5yr, 
@@ -413,7 +584,7 @@ sdwis_enf_all %>%
   select(-geometry) %>%
   mutate(enf_bin = cut(enf_5yr, 
                        breaks = c(unique(quantile(enf_5yr, 
-                                                  probs = seq(0, 1, by = 0.05), 
+                                                  probs = seq(0, 1, by = 0.1), 
                                                   na.rm = TRUE))), 
                        include.lowest = TRUE)) %>%
   group_by(enf_bin) %>%
@@ -451,26 +622,22 @@ sdwis_enf_all %>%
 
 ## What is the Climate Vulerability Index?
 ```{r}
-# loading cvi: 
-cvi <- demo$cvi 
+cvi <- demo$cvi
+# loading cvi:
 cvi_tidy <- cvi %>%
   select(-X) %>%
   rename(census_tract = fips_code)
-
-# loading analysis keys: 
+# loading analysis keys:
 analysis_keys <- keys$analysis_keys
-
-# loading tract crosswalk: 
+# loading tract crosswalk:
 pwsids <- unique(demo$census$pwsid)
 tx_crosswalk <- crosswalk %>%
   select(-X) %>%
   filter(pwsid %in% pwsids)
-
-# merging cvi with the crosswalk: 
-cvi_cross <- merge(cvi_tidy, tx_crosswalk, by.x = "census_tract", 
+# merging cvi with the crosswalk:
+cvi_cross <- merge(cvi_tidy, tx_crosswalk, by.x = "census_tract",
       by.y = "tract_geoid") %>%
-  mutate(cvi_weighted  = overall_cvi_score*tract_parcel_weight) 
-
+  mutate(cvi_weighted  = overall_cvi_score*tract_parcel_weight)
 cvi_weighted <- cvi_cross %>%
   group_by(pwsid) %>%
   summarize(cvi_weighted_score = weighted.mean(cvi_weighted))
@@ -486,23 +653,38 @@ pwsid_geometries <- demo$census %>%
 cvi_weighted_geoms <- merge(cvi_weighted, pwsid_geometries) %>%
   st_as_sf(.) %>%
   st_transform(., crs = st_crs(enviro_sw$major_river_basins))
+mean(cvi_weighted_geoms$cvi_weighted_score)
+median(cvi_weighted_geoms$cvi_weighted_score)
+
+# working on just east tx: 
+etx_cvi <- cvi_weighted_geoms %>%
+  as.data.frame() %>%
+  select(-geometry) %>%
+  left_join(keys$analysis_keys) %>%
+  filter(east_tx_flag == "yes") %>%
+  select(pwsid, cvi_weighted_score, east_tx_flag, geometry) %>%
+  st_as_sf() 
+mean(etx_cvi$cvi_weighted_score)
+median(etx_cvi$cvi_weighted_score)
 
 cvi_pal <- colorNumeric(
   palette = viridis::mako(9),
-  domain = cvi_weighted_geoms$cvi_weighted_score)
+  domain = etx_cvi$cvi_weighted_score)
 
 leaflet() %>%
   addProviderTiles(providers$CartoDB.VoyagerNoLabels, group = "Toner Lite") %>%
-  addPolygons(data = cvi_weighted_geoms,
-              opacity = 9,
-              color = ~cvi_pal(cvi_weighted_score),
+  addPolygons(data = etx_cvi,
+              fillOpacity = 0.9,
+              stroke = TRUE,
+              color = "black",
+              fillColor = ~cvi_pal(cvi_weighted_score),
               weight = 1,
-              label = paste0("pwsid: ", cvi_weighted_geoms$pwsid,
-                "; cvi: ", round(cvi_weighted_geoms$cvi_weighted_score, 2))) %>%
+              label = paste0("pwsid: ", etx_cvi$pwsid,
+                "; cvi: ", round(etx_cvi$cvi_weighted_score, 2))) %>%
   addLegend("bottomright",
             pal = cvi_pal,
-            values = cvi_weighted_geoms$cvi_weighted_score,
-            title = "cvi",
+            values = etx_cvi$cvi_weighted_score,
+            title = "CVI",
             opacity = 1)
 
 # how does systems with high CVI relate to %POC, MHI, and violations?
@@ -510,6 +692,15 @@ leaflet() %>%
 # variables incorporated into the CVI calculation. 
 cvi_analysis <- cvi_weighted %>%
   left_join(analysis_keys)
+
+etx_cvi_analysis <- cvi_analysis %>%
+  filter(east_tx_flag == "yes")
+
+ggplot(cvi_analysis, aes(x = cvi_weighted_score)) + 
+  geom_histogram(fill = "lightblue") + 
+  geom_histogram(data = etx_cvi_analysis, fill = "pink") + 
+  theme_minimal() + 
+  labs(x = "CVI", y = "Number of PWSIDs")
 
 ggplot(cvi_analysis, aes(x = cvi_weighted_score, 
                           y = estimate_mhi)) + 
@@ -522,7 +713,9 @@ ggplot(cvi_analysis, aes(x = cvi_weighted_score,
   geom_smooth(data = cvi_analysis %>% 
                 filter(healthbased_violations_5yr>0), 
              color = "red") + 
-  labs(x = "CVI", y = "MHI")
+  labs(x = "CVI", y = "MHI") + 
+  xlim(0, 0.7) + 
+  ylim(0, 250000)
 
 ggplot(cvi_analysis, aes(x = cvi_weighted_score, 
                           y = estimate_poc_alone_per)) + 
@@ -535,7 +728,39 @@ ggplot(cvi_analysis, aes(x = cvi_weighted_score,
   geom_smooth(data = cvi_analysis %>% 
                 filter(healthbased_violations_5yr>0), 
              color = "red") + 
-  labs(x = "CVI", y = "%POC")
+  labs(x = "CVI", y = "%POC")+ 
+  xlim(0, 0.7) + 
+  ylim(0, 80)
+
+ggplot(etx_cvi_analysis, aes(x = cvi_weighted_score, 
+                          y = estimate_mhi)) + 
+  geom_point() + 
+  geom_smooth(color = "grey") + 
+  theme_minimal() +
+  geom_point(data = etx_cvi_analysis %>% 
+               filter(healthbased_violations_5yr>0), 
+             color = "red") +
+  geom_smooth(data = etx_cvi_analysis %>% 
+                filter(healthbased_violations_5yr>0), 
+             color = "red") + 
+  labs(x = "CVI", y = "MHI") + 
+  xlim(0, 0.7) + 
+  ylim(0, 250000)
+
+ggplot(etx_cvi_analysis, aes(x = cvi_weighted_score, 
+                          y = estimate_poc_alone_per)) + 
+  geom_point() + 
+  geom_smooth(color = "grey") + 
+  theme_minimal() +
+  geom_point(data = etx_cvi_analysis %>% 
+               filter(healthbased_violations_5yr>0), 
+             color = "red") +
+  geom_smooth(data = etx_cvi_analysis %>% 
+                filter(healthbased_violations_5yr>0), 
+             color = "red") + 
+  labs(x = "CVI", y = "%POC")+ 
+  xlim(0, 0.7) + 
+  ylim(0, 80)
 
 
 # checking out binned results in table form: 
@@ -567,7 +792,8 @@ cvi_analysis %>%
             health_5yr = mean(healthbased_violations_5yr), 
             mean_mhi = mean(estimate_mhi, na.rm = T), 
             mean_poc = mean(estimate_poc_alone_per, na.rm = T)) %>%
-  mutate(quantile = c("0-20","20-40","40-60","60-80","80-100"))
+  mutate(quantile = c("0-20","20-40","40-60","60-80","80-100")) %>%
+  relocate(quantile, .after = cvi_bin)
 
 # Overall findings: 
 # - Spatially, CVI is high within cities, decreases in suburban areas, and 
@@ -593,7 +819,7 @@ cvi_analysis %>%
 
 ## Does the system use green energy/focus on green energy?
 ```{r}
-# We can actually probably answer this using the IUPs GPR
+# We might be able to answer this with some of the IUP GPR data... 
 iup <- fin$TX_PPL_SFY14_24 %>%
   rename(pwsid = pws_id)
 
@@ -610,7 +836,7 @@ iup <- fin$TX_PPL_SFY14_24 %>%
 # 
 # apparent loss = paper losses when water reaches a customer but the volume 
 #   is not accurately measured due to meter inaccuracy 
-# real loss = physical loss from infrastrucutre leakage - occur prior to 
+# real loss = physical loss from infrastructure leakage - occur prior to 
 #   reaching the customer (we care more about these, right?!)
 all_wl <- wds$water_loss
 
@@ -632,7 +858,7 @@ pwsid_keys <- demo$census %>%
 # grabbing water loss audit data: 
 wl <- wds$water_loss %>%
   janitor::clean_names() %>%
-  select(year, name_of_utility, real_loss_cost_in_dollars, 
+  select(year, name_of_utility, real_loss_gcd, real_loss_cost_in_dollars, 
          apparent_loss_cost_in_dollars) %>%
   mutate(name_of_utility_tidy = str_to_upper(name_of_utility), 
          name_of_utility_tidy = str_squish(name_of_utility_tidy), 
@@ -754,7 +980,8 @@ all_name_matches <- merge(all_pwsid_names, all_hist_names,
 
 # tidying and analysis: 
 wl_tidy <- all_name_matches %>%
-  select(year, name_of_utility, real_loss_cost_in_dollars, 
+  select(year, name_of_utility, 
+         real_loss_gcd, real_loss_cost_in_dollars, 
          apparent_loss_cost_in_dollars, final_pwsid) %>%
   rename(pwsid = final_pwsid, 
          real_loss = real_loss_cost_in_dollars, 
@@ -772,26 +999,77 @@ wl_summary <- wl_tidy %>%
             mean_appar_loss = mean(appar_loss), 
             mean_poc = mean(estimate_poc_alone_per), 
             mean_mhi = mean(estimate_mhi), 
-            mean_health_5yr = mean(healthbased_violations_5yr))
+            mean_health_5yr = mean(healthbased_violations_5yr), 
+            mean_real_loss_gcd = mean(as.numeric(real_loss_gcd), na.rm = T))
 
 # plotting relationships: 
-ggplot(wl_tidy, aes(x = real_loss)) + 
-  geom_histogram()
+wl_tidy_df <- wl_tidy %>%
+  as.data.frame() %>%
+  select(-geometry) %>%
+  mutate(real_loss_gcd = as.numeric(real_loss_gcd)) 
+ggplot(wl_tidy_df, aes(x = real_loss_gcd, fill = east_tx_flag)) + 
+  geom_histogram() + 
+  scale_fill_manual(values = c("yes"="lightpink", "no"="lightblue"), 
+                      name = "") +
+  theme_minimal() + 
+  labs(x = "Mean Real Loss (2010 - 2022) in Gallons/Connections/Day", 
+       y = "Number of PWSIDs")
 
-ggplot(wl_summary, aes(x = mean_mhi, y = mean_real_loss)) + 
+length(unique(wl_tidy_df$pwsid)) # 2981
+etx_wl <- wl_tidy_df %>% filter(east_tx_flag == "yes")
+length(unique(etx_wl$pwsid))
+
+# getting summary stats: 
+wl_tidy_df %>%
+  group_by(east_tx_flag) %>%
+  summarize(mean_real_loss_gcd = mean(real_loss_gcd), 
+            median_real_loss_gcd = median(real_loss_gcd))
+
+# creating some summary plots and comparisons with key stats of interest: 
+ggplot(wl_summary, aes(x = mean_mhi, y = mean_real_loss_gcd)) + 
   geom_point(aes(color = mean_poc)) + 
   geom_point(data = wl_summary %>%
                filter(mean_health_5yr > 0), color = "red")
 
-ggplot(wl_summary, aes(x = mean_poc, y = mean_real_loss)) + 
+ggplot(wl_summary, aes(x = mean_poc, y = mean_real_loss_gcd)) + 
   geom_point(aes(color = mean_mhi)) + 
   geom_point(data = wl_summary %>%
                filter(mean_health_5yr > 0), color = "red")
 
-ggplot(wl_summary, aes(x = mean_appar_loss, y = mean_real_loss)) + 
+ggplot(wl_summary, aes(x = mean_real_loss_gcd, y = mean_health_5yr, 
+                       size = mean_poc)) + 
   geom_point() + 
-  geom_point(data = wl_summary %>%
-               filter(mean_health_5yr > 0), color = "red")
+  geom_point(data = wl_summary %>% filter(pwsid %in% etx_wl$pwsid),
+             color = "pink") + 
+  scale_size_continuous(name = "% POC") + 
+  theme_minimal() + 
+  labs(x = "Mean Real Loss (2010 - 2022) in Gallons/Connections/Day", 
+       y = "Number of Health-based Violations (5yr)")  
+
+ggplot(wl_summary
+       %>% filter(pwsid %in% etx_wl$pwsid), 
+       aes(x = mean_real_loss_gcd, y = mean_mhi)) + 
+  geom_point() + 
+  geom_point(data = wl_summary %>% filter(mean_health_5yr > 0 & pwsid %in% etx_wl$pwsid),
+             color = "red") + 
+  # scale_size_continuous(name = "% POC") + 
+  theme_minimal() + 
+  labs(x = "Mean Real Loss (2010 - 2022) in Gallons/Connections/Day", 
+       y = "MHI")  
+
+ggplot(wl_summary
+       %>% filter(pwsid %in% etx_wl$pwsid), 
+       aes(x = mean_real_loss_gcd, y = mean_poc)) + 
+  geom_point() + 
+  geom_point(data = wl_summary %>% filter(mean_health_5yr > 0 & pwsid %in% etx_wl$pwsid),
+             color = "red") + 
+  # scale_size_continuous(name = "% POC") + 
+  theme_minimal() + 
+  labs(x = "Mean Real Loss (2010 - 2022) in Gallons/Connections/Day", 
+       y = "%POC")  
+
+# geom_point(data = wl_summary %>%
+  #              filter(mean_health_5yr > 0), color = "red")
 
 # table of status for each apparent loss bin: 
 wl_summary %>%
@@ -806,7 +1084,8 @@ wl_summary %>%
             mean_poc = mean(mean_poc, na.rm = T), 
             mean_mhi = mean(mean_mhi, na.rm = T), 
             mean_health_5yr = mean(mean_health_5yr, na.rm = T)) %>%
-  mutate(quantile = c("0-20","20-40","40-60","60-80","80-100"))
+  mutate(quantile = c("0-20","20-40","40-60","60-80","80-100")) %>%
+  relocate(quantile, .after = real_loss_bin)
 
 # what does high real loss look like spatially?
 wl_summary_sf <- wl_summary %>%
@@ -909,7 +1188,9 @@ pwsid_treat %>%
   summarize(total = n(), 
             have_info = sum(!is.na(treat_steps)),
             mean_treat_steps = mean(treat_steps, na.rm = T), 
-            median_treat_steps = median(treat_steps, na.rm = T)) 
+            median_treat_steps = median(treat_steps, na.rm = T)) %>%
+  rename(n = have_info) %>%
+  select(-total)
 
 
 # Overall findings: 
@@ -927,7 +1208,8 @@ pwsid_treat %>%
 # basic info from sdwis: 
 source <- demo$census
 water_source <- source %>%
-  select(pwsid, pws_name, city_served, county_served, primary_source_code)
+  select(pwsid, primary_source_code) %>%
+  mutate(type = "TX")
 
 ggplot(water_source, aes(x = primary_source_code, fill = primary_source_code)) +
   theme_minimal() + 
@@ -936,6 +1218,58 @@ ggplot(water_source, aes(x = primary_source_code, fill = primary_source_code)) +
   scale_fill_discrete(name = "") + 
   labs(x = "Primary Water Source", y = "Count of PWSIDs")
 
+# adding east TX breakdown: 
+etx_source <- source %>%
+  filter(east_tx_flag == "yes") %>%
+  select(pwsid, primary_source_code)%>%
+  mutate(type = "East TX")
+
+ggplot(etx_ource, aes(x = primary_source_code, 
+                      fill = primary_source_code)) +
+  theme_minimal() + 
+  geom_histogram(stat = "count")+ 
+  scale_color_discrete(name = "") + 
+  scale_fill_discrete(name = "") + 
+  labs(x = "Primary Water Source", y = "Count of PWSIDs")
+
+# combining everything for a graph: 
+all_tx <- rbind(etx_source, water_source)
+demo$census %>%
+  as.data.frame() %>%
+  select(-geometry) %>%
+  group_by(primary_source_code, east_tx_flag) %>%
+  count()
+
+ggplot(all_tx, aes(x = primary_source_code, fill = type)) +
+  theme_minimal() + 
+  geom_bar(position = "identity", alpha = 0.5) +
+  geom_bar(data = all_tx %>% filter(type == "East TX"), 
+           position = "identity", alpha = 0.5) +
+  scale_color_discrete(name = "") + 
+  scale_fill_discrete(name = "") + 
+  labs(x = "Primary Water Source", y = "Count of PWSIDs")
+
+# also interested in seeing how this relates to actual population: 
+pop_source <- demo$census %>%
+  as.data.frame() %>%
+  select(-geometry) %>%
+  group_by(primary_source_code, east_tx_flag) %>%
+  summarize(pop_served = sum(estimate_total_pop, na.rm = T)) %>%
+  mutate(percent_pop = 
+           case_when(east_tx_flag == "no" ~ (pop_served / 44291253)*100, 
+                     east_tx_flag == "yes" ~ (pop_served / 4332072)*100))
+
+# investigating whether east TX source breakdown is similar: 
+pop_source_plot <- demo$census 
+ggplot(pop_source_plot, aes(x = primary_source_code, 
+                            y = estimate_total_pop, 
+                            color = primary_source_code)) + 
+  geom_jitter() + 
+  geom_jitter(data = pop_source_plot %>% filter(east_tx_flag == "yes"), 
+             color = "pink") + 
+  theme_minimal() + 
+  theme(legend.position = "none") + 
+  labs(x = "",  y = "Estimated Population Served")
 
 # looking at county and groundwater keys: 
 # NOTE: hatched aquifersare subcrop areas (part of an aquifer that lies or dips
@@ -966,7 +1300,28 @@ pwsid_summary <- pwsid_gw %>%
   group_by(value) %>%
   summarize(number_of_pwsids = length(unique(pwsid)))
 
-ggplot(pwsid_summary, aes(x = value, y = number_of_pwsids, 
+pwsid_summary <- pwsid_summary[order(pwsid_summary$number_of_pwsids, decreasing = T),]
+
+# finding the most common aquifers used in TX and East TX: 
+ggplot(pwsid_summary, 
+       aes(x = reorder(value, -number_of_pwsids), y = number_of_pwsids, 
+                          color = value, fill = value)) + 
+  geom_bar(stat = "identity") + 
+  coord_flip() + 
+  theme_minimal() + 
+  theme(legend.position = "none") + 
+  labs(y = "Number of Utilities", x = "Aquifer")
+
+etx_pwsid_summary <- pwsid_gw %>%  
+  as.data.frame() %>%
+  select(-geometry) %>%
+  left_join(keys$analysis_keys) %>%
+  filter(east_tx_flag == "yes") %>%
+  group_by(value) %>%
+  summarize(number_of_pwsids = length(unique(pwsid)))
+
+ggplot(etx_pwsid_summary, 
+       aes(x = reorder(value, -number_of_pwsids), y = number_of_pwsids, 
                           color = value, fill = value)) + 
   geom_bar(stat = "identity") + 
   coord_flip() + 
@@ -1001,6 +1356,7 @@ tx_county <- tidycensus::get_acs(
   year = 2021,
   geometry = TRUE
 )
+
 counties <- unlist(strsplit(tx_county$NAME, split = ","))
 tx_county$counties <- trimws(counties[grepl("County", counties)])
 
@@ -1026,11 +1382,42 @@ aquifer_summary <- pwsid_gw %>%
   summarise(counties = paste(unique(county_served), collapse=", "))
 
 
-
+#############################
 # investigating surface water: 
+#############################
 pwsid_sw <- water_source %>%
   filter(primary_source_code == "SW") %>%
   left_join(sw_intake_keys) 
+
+etx_pwsid_sw <- etx_source %>%
+  filter(primary_source_code == "SW")
+
+# how many do we have? 
+pwsid_sw %>%
+  as.data.frame() %>% 
+  select(-geometry) %>%
+  group_by(pwsid) %>%
+  distinct(pwsid)
+# 286 in all of TX
+
+pwsid_sw %>%
+  as.data.frame() %>% 
+  select(-geometry) %>%
+  filter(alt_res_name != "no matching wtrbdy") %>%
+  group_by(pwsid) %>%
+  nrow()
+# we have matching reservoirs for 222 
+
+# checking out east TX stats: 
+etx_source %>%
+  as.data.frame() %>% 
+  filter(primary_source_code == "SW") %>%
+  left_join(sw_intake_keys)  %>%
+  select(-geometry) %>%
+  filter(alt_res_name != "no matching wtrbdy") %>%
+  group_by(pwsid) %>%
+  distinct(pwsid)
+
 
 # checking out impaired basins: 
 imp_basin <- enviro_sw$impaired_basins
@@ -1051,14 +1438,65 @@ by_res <- pwsid_sw_basins %>%
   group_by(res_name) %>%
   summarize(total = length(unique(pwsid)))
 
+# linking to east TX: 
+etx_by_res <- etx_pwsid_sw %>%
+  as.data.frame() %>%
+  select(-geometry) %>%
+  left_join(keys$pwsid_sw) %>%
+  group_by(res_name) %>%
+  summarize(total = length(unique(pwsid)))
+
+# merging with basin info: 
+etx_pwsids <- demo$census %>%
+  filter(east_tx_flag == "yes") %>%
+  distinct() %>%
+  select(pwsid) %>%
+  as.data.frame() %>%
+  select(-geometry)
+
+etx_pwsid_intakes <- keys$pwsid_sw %>%
+  filter(pwsid %in% etx_pwsids$pwsid)
+
+etx_pwsid_sw_basins <- merge(etx_pwsid_intakes, simple_basin_info, 
+                         by.x = "basin_name_short", 
+                         by.y = "imp_basin_names", all.x = TRUE)
+
+
 # how many pwsids are getting from basins where the percentage impaired 
 # is greater than 60%?
-# TODO: probably an st_intersection here? 
 pwsid_sw_basins %>%
   filter(pct_impaired >= 60) %>%
-  count()
+  summarize(x = length(unique(pwsid)))
+
+etx_pwsid_sw_basins %>%
+  filter(pct_impaired >= 60) %>%
+  summarize(x = length(unique(pwsid)))
 
 
+# st_intersection of pwsid boundaries pulling surface water to 
+# figure out how many pwsids are pulling from basins that are 
+# impaired by a certain percentage
+basin <- enviro_sw$impaired_basins
+basin_boundaires <- enviro_sw$major_river_basins
+pwsid_imp_basin <- st_intersection(pwsid_sw, basin_boundaires)
+pwsid_imp_basin <- pwsid_imp_basin %>%
+  left_join(basin, by = "basin_num")
+
+pwsid_imp_basin_simp <- pwsid_imp_basin %>%
+  group_by(basin_name.x, pct_impaired) %>%
+  summarize(total_pwsid = length(unique(pwsid)))
+
+ggplot(pwsid_imp_basin_simp, 
+       # aes(x = reorder(basin_name.x, -pct_impaired), 
+       aes(x = total_pwsid, 
+           y = pct_impaired,
+           color = pct_impaired)) + 
+  geom_point(size = 5) + 
+  scale_color_continuous(name = "% Basin Impaired") + 
+  theme_minimal() + 
+  labs(x = "Number of PWSIDs", y = "% Basin Impaired") 
+
+# summary stats: 
 pwsid_sw_basins %>%
   as.data.frame() %>%
   select(-geometry) %>%
@@ -1090,6 +1528,7 @@ pwsid_sw_basins %>%
 #   impaired 
 # - 15 pwsids are pulling from Lake Travis, and 12 from the Cedar Creek 
 #   reservoir, and 12 from Lake Tawakoni 
+
 ```
 
 Potential rabbit holes of interest: 

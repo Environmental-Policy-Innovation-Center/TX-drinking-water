@@ -539,7 +539,6 @@ analysis_keys <- merge(census_keys, violation_summary, by = "pwsid",
 analysis_keys <- analysis_keys %>%
   mutate(across(paperwork_violations_10yr:total_violations_5yr, ~replace_na(.,0)))
 # NOTE: NAs in census columns indicate they're missing from the tract crosswalk
-# if they're missing JUST the mhi column, that stat was NA in the census. 
 
 # adding this to a larger list: 
 TX_merging_keys <- list()
