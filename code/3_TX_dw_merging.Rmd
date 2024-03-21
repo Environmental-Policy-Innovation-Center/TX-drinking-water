@@ -23,17 +23,20 @@ source("./code/functions/intersect_aquifers.R")
 # and financial lists generated in TX_dw_collating: 
 demo <- aws.s3::s3read_using(readRDS, 
                             object = "s3://tech-team-data/state-drinking-water/TX/clean/TX_demographic_list.RData")
+
 enviro_sw <- aws.s3::s3read_using(readRDS, 
                             object = "s3://tech-team-data/state-drinking-water/TX/clean/TX_enviro_surface_list.RData")
+
 enviro_gw <- aws.s3::s3read_using(readRDS, 
                             object = "s3://tech-team-data/state-drinking-water/TX/clean/TX_enviro_ground_list.RData")
+
 wds <- aws.s3::s3read_using(readRDS, 
                             object = "s3://tech-team-data/state-drinking-water/TX/clean/TX_water_delivery_list.RData")
+
 fin <- aws.s3::s3read_using(readRDS, 
                             object = "s3://tech-team-data/state-drinking-water/TX/clean/TX_financial_list.RData")
 
 # Grabbing census geographies for data merging: 
-# NOTE: data are st_crs == NAD83
 census_vars <- c(total_pop = "B01003_001")
 census <- tidycensus::get_acs(
   geography = "tract", 
@@ -455,17 +458,9 @@ leaflet() %>%
                                   well_final$aquifer_five))
 ```
 
-## Merging: demographics, financial, water delivery system: 
-```{r}
-names(demo)
-names(fin)
-names(wds)
-# everything here is clean & easy to merge with either census geographies, 
-# counties, or pwsids. 
-```
-
 ## Merging keys: 
 ```{r}
+# key of sw intake, pwsid, water body, and basin name: 
 sw_intakes <- aws.s3::s3read_using(st_read, 
                             object = "s3://tech-team-data/state-drinking-water/TX/clean/pwsid_swaterbodies.geojson")
 
@@ -479,6 +474,8 @@ pwsid_sw_merge <- sw_intakes %>%
   filter(!is.na(pwsid))
 # 355 pwsids
 
+
+# key of wells, counties, and all intersecting aquifers: 
 gw_wells <- aws.s3::s3read_using(st_read, 
                             object = "s3://tech-team-data/state-drinking-water/TX/clean/well_county_aquifers.geojson")
 # well number, county, and aquifers: 
@@ -488,7 +485,8 @@ well_gw_merge <- gw_wells %>%
   unique()
 # 12997 wells
 
-# also want a key for variables included in most analyses, such as MHI, 
+
+# key for variables included in most analyses, such as MHI, 
 # %POC, and violations (5yr and 10yr) - paperwork and health-based
 census_keys <- demo$census %>%
   select("pwsid", "east_tx_flag", "estimate_mhi", "estimate_poc_alone_per")
@@ -554,5 +552,3 @@ put_object(
   bucket = "tech-team-data",
 )
 ```
-
-

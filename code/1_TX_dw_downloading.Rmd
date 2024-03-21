@@ -2,6 +2,7 @@
 title: "Texas Drinking Water Data Downloading"
 author: "EmmaLi Tsai"
 date: "2024-01-29"
+last_updated: "2024-03-21"
 output: html_document
 ---
 
@@ -98,7 +99,7 @@ census <- tidycensus::get_acs(
   # grab stats for neighboring states since the crosswalk
   # uses them for SABs close to the border: 
   state = c("TX", "AR", "OK", "NM", "LA"), 
-  year = 2021,
+  year = 2020,
   geometry = TRUE
 )
 
