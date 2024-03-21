@@ -2,6 +2,7 @@
 title: "TX Drinking Water Data Analysis - Socioeconomic"
 author: "EmmaLi Tsai"
 date: "2024-02-23"
+last_updated: "2024-03-21"
 output: html_document
 ---
 ## Loading packages 
@@ -14,37 +15,39 @@ library(aws.s3)
 
 ## Loading data lists 
 ```{r}
-# reading demographic, environmental (gw and sw), water delivery system (wds)
-# and financial lists generated in TX_dw_collating: 
 demo <- aws.s3::s3read_using(readRDS, 
                             object = "s3://tech-team-data/state-drinking-water/TX/clean/TX_demographic_list.RData")
+
 enviro_sw <- aws.s3::s3read_using(readRDS, 
                             object = "s3://tech-team-data/state-drinking-water/TX/clean/TX_enviro_surface_list.RData")
+
 enviro_gw <- aws.s3::s3read_using(readRDS, 
                             object = "s3://tech-team-data/state-drinking-water/TX/clean/TX_enviro_ground_list.RData")
+
 wds <- aws.s3::s3read_using(readRDS, 
                             object = "s3://tech-team-data/state-drinking-water/TX/clean/TX_water_delivery_list.RData")
+
 fin <- aws.s3::s3read_using(readRDS, 
                             object = "s3://tech-team-data/state-drinking-water/TX/clean/TX_financial_list.RData")
 
 keys <- aws.s3::s3read_using(readRDS, 
                             object = "s3://tech-team-data/state-drinking-water/TX/clean/TX_merging_keys_list.RData")
-
-crosswalk <- aws.s3::s3read_using(read.csv, 
-                                  object = "s3://tech-team-data/pws_crosswalk/pws_census_tract_weighted_crosswalk.csv")
 ```
 
 ## East TX flag: 
 ```{r}
+# if running stats for all of TX - run this 
 census <- demo$census
+# for water affordability: 
 aff <- fin$TX_affordability_DAC %>%
   as.data.frame() %>%
   select(-c(geometry, estimate_mhi))
 
-# comment out code below and don't run if not focusing just on East TX:
-census <- census %>%
+
+# if running stats for just East TX - run this 
+census <- demo$census %>%
   filter(east_tx_flag == "yes")
-# for the hcf anaylsis: 
+# for water affordability: 
 aff <- fin$TX_affordability_DAC %>%
   as.data.frame() %>%
   select(-c(geometry, estimate_mhi)) %>%
@@ -58,6 +61,7 @@ aff <- fin$TX_affordability_DAC %>%
 ```
 
 ## How have water utilities been funded historically? 
+NOTE: question has been sunsetted in favor of Policy Link analysis 
 ```{r}
 # metadata for these columns: 
 #   - gpr = green project reserve, a capitalization grant that may be used for 
@@ -231,21 +235,20 @@ race_stats <- census %>%
   as.data.frame(.) %>%
   select(-geometry) 
 
-# grabbing summary stats: 
+# grabbing summary stats for communities served by water systems: 
 colMeans(race_stats %>% select(-pwsid), na.rm = TRUE)
 summary(census)
 
-# long format for plotting: 
+# formatting for plotting: 
 race_long <- race_stats %>%
   pivot_longer(., estimate_white_alone_per:estimate_mhi)
-
 race_long$name <- as.factor(race_long$name)
 levels(race_long$name) <- c("AIAN", "Asian", "Black", 
                             "Latino/a", "MHI", "Mixed", 
                             "NAPI", "Other", "POC", 
                             "White")
 
-# histograms of % each race bin: 
+# histograms of % each race, ethnicity, and MHI bin: 
 options(scipen=10000)
 ggplot(race_long, aes(x = value, color = name, fill = name)) + 
   geom_histogram() + 
@@ -260,7 +263,92 @@ ggplot(race_long, aes(x = value, color = name, fill = name)) +
                        vjust = 0.5, 
                        hjust=1)) 
 
-# making another histogram showing racial breakdown histograms but comparing 
+# investigating relationships between race, ethnicity, and MHI with 
+# health-based violations: 
+analysis_keys <- keys$analysis_keys
+race_viols_wide <- merge(race_stats, analysis_keys, by = "pwsid") 
+race_viols <- merge(race_long, analysis_keys, by = "pwsid") 
+
+race_viol_long <- pivot_longer(race_viols, cols = paperwork_violations_10yr:total_violations_5yr, 
+                               names_to = "viol_type", values_to = "total_viols")
+
+ggplot(race_viol_long %>% filter(viol_type %in% c("healthbased_violations_10yr", 
+                                                  "healthbased_violations_5yr")), 
+       aes(x = value, y = total_viols, color = viol_type)) +
+  geom_point() + 
+  facet_wrap(~name, scales = "free") + 
+  scale_color_discrete(name = "") +
+  labs(x = "% Population of Race", y = "Total Violations") + 
+  theme_minimal() + 
+  theme(legend.position = "bottom")
+
+# calculating and distribution of violations across different race bins: 
+races <- race_viols_wide %>%
+  select(estimate_white_alone_per:estimate_hisp_alone_per) %>%
+  names()
+race_viol_breakdown <- data.frame()
+for(i in 1:length(races)){
+  race_i <- races[i]
+  message(race_i)
+  # investigating how the data look across quantiles: 
+  race_alone_bins <- race_viols_wide %>%
+    as.data.frame() %>%
+    select(-geometry) %>%
+    mutate(poc_bin = cut(!!sym(race_i), 
+                         breaks = c(unique(quantile(!!sym(race_i), 
+                                             probs = seq(0, 1, by = 0.20),
+                                             na.rm = T))), 
+                         include.lowest = TRUE)) %>%
+    group_by(poc_bin) %>%
+    summarize(total_utilities = n(),
+              paperwork_10yr = mean(paperwork_violations_10yr), 
+              paperwork_5yr = mean(paperwork_violations_5yr), 
+              health_10yr = mean(healthbased_violations_10yr), 
+              health_5yr = mean(healthbased_violations_5yr), 
+              mean_mhi = mean(estimate_mhi.x, na.rm = T)) %>%
+    mutate(race = race_i, 
+           quantile = ntile(poc_bin, n = length(unique(poc_bin)))) 
+  race_viol_breakdown <- rbind(race_viol_breakdown, race_alone_bins)
+}
+race_viol_breakdown
+
+# taking the df above and just focusing on health-based violations: 
+race_5yr_healthbased <- race_viol_breakdown %>%
+  select(poc_bin, health_5yr, race) %>%
+  pivot_wider(., names_from = race, values_from = health_5yr) 
+names(race_5yr_healthbased) <- c("%Race", "White_Viol", "Black_Viol", 
+                                 "AIAN_Viol", "Asian_Viol", "NAPI_Viol", 
+                                 "Other_Viol", "Mixed_Viol", "POC_Viol", 
+                                 "Hisp_Viol")
+# this table is rather ugly but is a helpful visual aid for investigating 
+# violations by quantile: 
+race_5yr_healthbased
+
+# plotting %POC: 
+poc_pal <- colorNumeric(
+  palette = viridis::viridis(20),
+  domain = census$estimate_poc_alone_per)
+
+leaflet() %>%
+  addProviderTiles(providers$CartoDB.VoyagerNoLabels, group = "Toner Lite") %>%
+  addPolygons(data = census,
+              fillOpacity = 0.9,
+              # opacity = 0.9,
+              # stroke = TRUE,
+              # color = "black",
+              color = ~poc_pal(estimate_poc_alone_per),
+              # fillColor = ~poc_pal(estimate_poc_alone_per),
+              weight = 1,
+              label = paste0("pwsid: ", census$pwsid,
+                             "; poc: ", census$estimate_poc_alone_per)) %>%
+  addLegend("bottomright",
+            pal = poc_pal,
+            values =  census$estimate_poc_alone_per,
+            title = "% POC",
+            opacity = 1)
+
+## comparison with East TX: ####################################################
+# making another histogram showing racial breakdown histograms by comparing 
 # east TX: 
 race_stats_TX <- demo$census %>%
   select(pwsid, estimate_white_alone_per:estimate_mixed_alone_per, 
@@ -270,16 +358,22 @@ race_stats_TX <- demo$census %>%
   pivot_longer(., estimate_white_alone_per:estimate_mhi) %>%
   mutate(flag = "TX")
 
-# re facotoring names for plotting: 
-race_stats_TX$name <- as.factor(race_stats_TX$name)
-levels(race_stats_TX$name) <- c("AIAN", "Asian", "Black", 
-                                "Latino/a", "MHI", "Mixed", 
-                                "NAPI", "Other", "POC", 
-                                "White")
-race_long <- race_long %>%
+race_stats_eTX <- demo$census %>%
+  select(pwsid, east_tx_flag, estimate_white_alone_per:estimate_mixed_alone_per, 
+         estimate_poc_alone_per, estimate_hisp_alone_per, estimate_mhi) %>%
+  as.data.frame(.) %>%
+  select(-geometry) %>%
+  filter(east_tx_flag == "yes") %>%
+  select(-east_tx_flag) %>%
+  pivot_longer(., estimate_white_alone_per:estimate_mhi) %>%
   mutate(flag = "East TX")
 
-all_race <- rbind(race_stats_TX, race_long)
+all_race <- rbind(race_stats_TX, race_stats_eTX)
+all_race$name <- as.factor(all_race$name)
+levels(all_race$name) <- c("AIAN", "Asian", "Black", 
+                           "Latino/a", "MHI", "Mixed", 
+                           "NAPI", "Other", "POC", 
+                           "White")
 
 ggplot(all_race, aes(x = value, color = flag, fill = flag)) + 
   geom_histogram(data = subset(all_race, flag == "TX"), 
@@ -300,113 +394,7 @@ ggplot(all_race, aes(x = value, color = flag, fill = flag)) +
                        hjust=1)) 
 
 
-# combining this info with violations: 
-analysis_keys <- keys$analysis_keys
-race_viols_wide <- merge(race_stats, analysis_keys, by = "pwsid") 
-race_viols <- merge(race_long, analysis_keys, by = "pwsid") 
-
-race_viol_long <- pivot_longer(race_viols, cols = paperwork_violations_10yr:total_violations_5yr, 
-                               names_to = "viol_type", values_to = "total_viols")
-
-ggplot(race_viol_long %>% filter(viol_type %in% c("healthbased_violations_10yr", 
-                                                  "healthbased_violations_5yr")), 
-       aes(x = value, y = total_viols, color = viol_type)) +
-  geom_point() + 
-  facet_wrap(~name, scales = "free") + 
-  scale_color_discrete(name = "") +
-  labs(x = "% Population of Race", y = "Total Violations") + 
-  theme_minimal() + 
-  theme(legend.position = "bottom")
-
-# calculating and distribution of violations across different race bins: 
-# race_bin_stats <- c(0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100)
-races <- race_viols_wide %>%
-  select(estimate_white_alone_per:estimate_hisp_alone_per) %>%
-  names()
-
-race_viol_breakdown <- data.frame()
-for(i in 1:length(races)){
-  race_i <- races[i]
-  message(race_i)
-  
-  # method for looking at quantiles: 
-  race_alone_bins <- race_viols_wide %>%
-    as.data.frame() %>%
-    select(-geometry) %>%
-    mutate(poc_bin = cut(!!sym(race_i), 
-                         breaks = c(unique(quantile(!!sym(race_i), 
-                                             probs = seq(0, 1, by = 0.20),
-                                             na.rm = T))), 
-                         include.lowest = TRUE)) %>%
-    group_by(poc_bin) %>%
-    summarize(total_utilities = n(),
-              paperwork_10yr = mean(paperwork_violations_10yr), 
-              paperwork_5yr = mean(paperwork_violations_5yr), 
-              health_10yr = mean(healthbased_violations_10yr), 
-              health_5yr = mean(healthbased_violations_5yr), 
-              mean_mhi = mean(estimate_mhi.x, na.rm = T)) %>%
-    mutate(race = race_i, 
-           quantile = ntile(poc_bin, n = length(unique(poc_bin)))) 
-  race_viol_breakdown <- rbind(race_viol_breakdown, race_alone_bins)
-  
-  # method for doing just bins: 
-  # race_alone_bins <- race_viols_wide %>%
-  #   as.data.frame() %>%
-  #   select(-geometry) %>%
-  #   mutate(poc_bin = cut(!!sym(race_i), race_bin_stats)) %>%
-  #   group_by(poc_bin) %>%
-  #   summarize(total_utilities = n(),
-  #             paperwork_10yr = mean(paperwork_violations_10yr), 
-  #             paperwork_5yr = mean(paperwork_violations_5yr), 
-  #             health_10yr = mean(healthbased_violations_10yr), 
-  #             health_5yr = mean(healthbased_violations_5yr)) %>%
-  #   mutate(race = race_i)
-}
-
-# this is the general final takeaway for race stats: 
-race_viol_breakdown
-
-
-# just focusing on health-based 
-race_5yr_healthbased <- race_viol_breakdown %>%
-  select(poc_bin, health_5yr, race) %>%
-  pivot_wider(., names_from = race, values_from = health_5yr) 
-
-names(race_5yr_healthbased) <- c("%Race", "White_Viol", "Black_Viol", 
-                                 "AIAN_Viol", "Asian_Viol", "NAPI_Viol", 
-                                 "Other_Viol", "Mixed_Viol", "POC_Viol", 
-                                 "Hisp_Viol")
-
-race_5yr_healthbased
-# NOTE: this tibble is not as pretty when you look at the data by quantiles, 
-# since the quantiles are different by race. Regardless, it's still a helpful
-# visual aid. 
-
-# wanna plot this as well: 
-poc_pal <- colorNumeric(
-  palette = viridis::viridis(20),
-  domain = c(0, 60))
-
-leaflet() %>%
-  addProviderTiles(providers$CartoDB.VoyagerNoLabels, group = "Toner Lite") %>%
-  addPolygons(data = census,
-              fillOpacity = 0.9,
-              stroke = TRUE,
-              color = "black",
-              # color = ~poc_pal(estimate_poc_alone_per),
-              fillColor = ~poc_pal(estimate_poc_alone_per),
-              weight = 1,
-              label = paste0("pwsid: ", census$pwsid,
-                             "; poc: ", census$estimate_poc_alone_per)) %>%
-  addLegend("bottomright",
-            pal = poc_pal,
-            values =  census$estimate_poc_alone_per,
-            title = "% POC",
-            opacity = 1)
-
-
-
-# Overall summary: 
+# Overall summary: ############################################################
 # - Texas is pretty segregated - % white alone is generally greater than 75%, 
 #   and very little mixing between white and other races (i.e., the spread of 
 #   races looks parabolic)
@@ -442,17 +430,14 @@ leaflet() %>%
 
 ## What are the education levels of those served? 
 ```{r}
-# grabbing some basic stats: 
-mean(census$estimate_no_school_per, na.rm = T)
-median(census$estimate_no_school_per, na.rm = T)
+# grabbing some basic stats of various education categories: 
+edu_cats <- census %>%
+  select(pwsid, estimate_no_school_per, estimate_high_school_per, 
+         estimate_bachelors_per, estimate_prof_degree_per)
+summary(edu_cats)
 
-mean(census$estimate_prof_degree_per, na.rm = T)
-median(census$estimate_prof_degree_per, na.rm = T)
-
-# grabbing % of population without any schooling, and those with a prof
-# degree
-edu_level <- census %>%
-  select(pwsid, estimate_no_school_per:estimate_prof_degree_per) %>%
+# grabbing % of population in each category: 
+edu_level <- edu_cats %>%
   as.data.frame() %>%
   select(-geometry)
 
@@ -462,69 +447,44 @@ edu_level_analysis <- merge(edu_level, analysis_keys, by = "pwsid")
 
 # what do these distributions look like?
 edu_level_analysis_long <- edu_level_analysis %>%
-  select(pwsid, estimate_no_school_per, estimate_prof_degree_per) %>%
+  select(pwsid, estimate_no_school_per:estimate_prof_degree_per) %>%
   pivot_longer(estimate_no_school_per:estimate_prof_degree_per)
 ggplot(edu_level_analysis_long, aes(x = value, fill = name)) + 
   geom_histogram() + 
   theme_minimal()
 
 # grabbing a table to see how these relate to education levels: 
-edu_bin_stats <- seq(0, 20, by = 2)
 
-no_school <- edu_level_analysis %>%
+# calculating and distribution of violations across different race bins: 
+edu_categories <- edu_level_analysis %>%
+  select(estimate_no_school_per:estimate_prof_degree_per) %>%
+  names()
+edu_viol_breakdown <- data.frame()
+for(i in 1:length(edu_categories)){
+  edu_i <- edu_categories[i]
+  message(edu_i)
+  # investigating how the data look across quantiles: 
+  edu_bins <- edu_level_analysis %>%
     as.data.frame() %>%
     select(-geometry) %>%
-  mutate(edu_bin = cut(estimate_no_school_per, 
-                             breaks = c(quantile(estimate_no_school_per, 
-                                                 probs = seq(0, 1, by = 0.20), 
-                                                 na.rm = TRUE)), 
-                             include.lowest = TRUE)) %>%
-  group_by(edu_bin) %>%
-  summarize(total_utilities = n(),
-            paperwork_10yr = mean(paperwork_violations_10yr), 
-            paperwork_5yr = mean(paperwork_violations_5yr), 
-            health_10yr = mean(healthbased_violations_10yr), 
-            health_5yr = mean(healthbased_violations_5yr), 
-            mean_mhi = mean(estimate_mhi, na.rm = T)) %>%
-  mutate(edu_level = "no_school", 
-         quantile = c("0-20","20-40","40-60","60-80","80-100", "NA"))
-  #   mutate(edu_bin = cut(estimate_no_school_per, edu_bin_stats)) %>%
-  #   group_by(edu_bin) %>%
-  #   summarize(total_utilities = n(),
-  #             paperwork_10yr = mean(paperwork_violations_10yr), 
-  #             paperwork_5yr = mean(paperwork_violations_5yr), 
-  #             health_10yr = mean(healthbased_violations_10yr), 
-  #             health_5yr = mean(healthbased_violations_5yr)) %>%
-  # mutate(edu_level = "no_school")
+    mutate(edu_bin = cut(!!sym(edu_i), 
+                         breaks = c(unique(quantile(!!sym(edu_i), 
+                                             probs = seq(0, 1, by = 0.20),
+                                             na.rm = T))), 
+                         include.lowest = TRUE)) %>%
+    group_by(edu_bin) %>%
+    summarize(total_utilities = n(),
+              paperwork_10yr = mean(paperwork_violations_10yr), 
+              paperwork_5yr = mean(paperwork_violations_5yr), 
+              health_10yr = mean(healthbased_violations_10yr), 
+              health_5yr = mean(healthbased_violations_5yr), 
+              mean_mhi = mean(estimate_mhi, na.rm = T)) %>%
+    mutate(race = race_i, 
+           quantile = ntile(edu_bin, n = length(unique(edu_bin)))) 
+  edu_viol_breakdown <- rbind(edu_viol_breakdown, edu_bins)
+}
+edu_viol_breakdown
 
-prof <- edu_level_analysis %>%
-  as.data.frame() %>%
-  select(-geometry) %>%
-  mutate(edu_bin = cut(estimate_prof_degree_per, 
-                       breaks = c(unique(quantile(estimate_prof_degree_per, 
-                                           probs = seq(0, 1, by = 0.20), 
-                                           na.rm = TRUE))), 
-                       include.lowest = TRUE)) %>%
-  group_by(edu_bin) %>%
-  summarize(total_utilities = n(),
-            paperwork_10yr = mean(paperwork_violations_10yr), 
-            paperwork_5yr = mean(paperwork_violations_5yr), 
-            health_10yr = mean(healthbased_violations_10yr), 
-            health_5yr = mean(healthbased_violations_5yr), 
-            mean_mhi = mean(estimate_mhi, na.rm = T)) %>%
-  mutate(edu_level = "prof_degree", 
-         quantile = c(""))
-  #   mutate(edu_bin = cut(estimate_prof_degree_per, edu_bin_stats)) %>%
-  #   group_by(edu_bin) %>%
-  #   summarize(total_utilities = n(),
-  #             paperwork_10yr = mean(paperwork_violations_10yr), 
-  #             paperwork_5yr = mean(paperwork_violations_5yr), 
-  #             health_10yr = mean(healthbased_violations_10yr), 
-  #             health_5yr = mean(healthbased_violations_5yr)) %>%
-  # mutate(edu_level = "prof_degree")
-
-edu_summaries <- rbind(prof, no_school) %>%
-  relocate(quantile, .after = edu_bin)
 
 # basic stats: 
 edu_level_analysis %>%
@@ -533,12 +493,6 @@ edu_level_analysis %>%
 edu_level_analysis %>%
   filter(estimate_prof_degree_per >= 5) %>%
   count()
-
-# how does no schooling relate to violations??
-ggplot(edu_level_analysis, aes(x = estimate_no_school_per, 
-                               y = healthbased_violations_10yr)) + 
-  geom_point() + 
-  geom_point(aes(x = estimate_prof_degree_per), color = "darkred")
 
 # what's the correlation between schooling and mhi?
 mhi_school <- edu_level_analysis %>%
@@ -550,7 +504,7 @@ levels(mhi_school$name) <- c("Bachelors",
                              "Professional Degree")
 ggplot(mhi_school, aes(x = value, y = estimate_mhi)) + 
   geom_point() + 
-  facet_wrap(~name) + 
+  facet_wrap(~name, scales = "free") + 
   geom_smooth(color = "grey") + 
   geom_point(data = mhi_school %>% filter(healthbased_violations_5yr > 0), 
              color = "red") + 
@@ -558,30 +512,29 @@ ggplot(mhi_school, aes(x = value, y = estimate_mhi)) +
   theme_minimal()
 # yay! the data make sense! 
 
-# can we do boxplots to show comparisons with east TX:
+## comparison with East TX: ####################################################
 edu_level_TX <- demo$census %>%
   select(pwsid, estimate_no_school_per:estimate_prof_degree_per) %>%
   as.data.frame() %>%
-  select(-geometry)
-
-# merging with analysis keys for main stats of interest: 
-analysis_keys <- keys$analysis_keys
-edu_level_analysis_TX <- merge(edu_level_TX, analysis_keys, by = "pwsid") 
-
-edu_level_analysis_long <- edu_level_analysis %>%
-  pivot_longer(estimate_no_school_per:estimate_prof_degree_per) %>%
-  mutate(flag = "East TX")
-
-edu_level_analysis_long_TX <- edu_level_analysis_TX %>%
-  pivot_longer(estimate_no_school_per:estimate_prof_degree_per)%>%
+  select(-geometry) %>%
   mutate(flag = "TX")
 
-all_edu <- rbind(edu_level_analysis_long, edu_level_analysis_long_TX)
+edu_level_eTX <- demo$census %>%
+  select(pwsid, east_tx_flag, estimate_no_school_per:estimate_prof_degree_per) %>%
+  as.data.frame() %>%
+  select(-geometry) %>%
+  filter(east_tx_flag == "yes") %>%
+  select(-east_tx_flag) %>%
+  mutate(flag = "East TX")
+
+all_edu <- rbind(edu_level_TX, edu_level_eTX)
+all_edu <- pivot_longer(all_edu, estimate_no_school_per:estimate_prof_degree_per)
 all_edu$name <- as.factor(all_edu$name)
 levels(all_edu$name) <- c("Bachelors",
-                             "High School", 
-                             "No Schooling", 
-                             "Professional Degree")
+                          "High School", 
+                          "No Schooling", 
+                          "Professional Degree")
+
 ggplot(all_edu, aes(x = name, y = value, 
                     fill = flag)) + 
   geom_boxplot(alpha = 0.5) + 
@@ -589,7 +542,7 @@ ggplot(all_edu, aes(x = name, y = value,
   theme_minimal()  + 
   labs(x = "", y = "Percent of Population")
 
-# Overall summary:
+# Overall summary: ############################################################
 # - As the % of people without schooling increases, MHI decreases
 # - As the % of people with professional degrees increases, MHI increases 
 #   but appears to level out after the percentage of people with prof degrees 
@@ -621,134 +574,20 @@ ggplot(all_edu, aes(x = name, y = value,
 
 ```
 
-## What are the population density demographics of those served? 
-```{r}
-# sab_census <- demo$census
-pop_density <- census %>%
-  select(pwsid, pop_density) %>%
-  as.data.frame() %>%
-  select(-geometry)
-
-analysis_keys <- keys$analysis_keys
-pop_density_analysis <- merge(pop_density, analysis_keys, by = "pwsid") 
-
-# NOTE: there's one pwsid with a huge population density - might be a 
-# mistake? Removing it for now 
-# pop_density_analysis <- pop_density_analysis %>%
-#   filter(pop_density != 9346644)
-
-# plot to see where we're at: 
-ggplot(pop_density_analysis, aes(x = pop_density)) + 
-  geom_histogram()
-
-# plots to investigate relationships between pop density and 
-# other metrics - filtering to capture trends at most sabs: 
-# how does pop density relate to % POC? 
-ggplot(pop_density_analysis %>% filter(pop_density < 2500000), 
-       aes(x = estimate_poc_alone_per, 
-           y = pop_density)) + 
-  geom_point() + 
-  geom_smooth(color = "grey")+
-  geom_point(data = pop_density_analysis %>% 
-               filter(healthbased_violations_5yr > 0 & pop_density < 2500000), 
-             color = "red") +
-  geom_smooth(data = pop_density_analysis %>% 
-                filter(healthbased_violations_5yr > 0 & pop_density < 2500000), 
-             color = "red") +
-  theme_minimal() + 
-  labs(x = "% POC", y = "Population Density")
-
-# how does pop density relate to MHI?? 
-ggplot(pop_density_analysis %>% filter(pop_density < 150000), 
-       aes(y = pop_density, 
-           x = estimate_mhi)) + 
-  geom_point() + 
-  geom_smooth(color = "grey")+
-  geom_point(data = pop_density_analysis %>% 
-               filter(healthbased_violations_5yr > 0 & pop_density < 150000), 
-             color = "red") +
-  geom_smooth(data = pop_density_analysis %>% 
-                filter(healthbased_violations_5yr > 0 & pop_density < 150000), 
-             color = "red") + 
-  theme_minimal()+ 
-  labs(x = "Median Household Income", y = "Population Density")
-
-# what about health-based violations by itself?
-# ggplot(pop_density_analysis %>% filter(pop_density < 150000), 
-#        aes(x = pop_density, 
-#            y = healthbased_violations_5yr)) + 
-#   geom_point() 
-
-pop_density_analysis %>%
-  filter(pop_density > 2500000) %>%
-  count()
-
-# checking out binned values
-pop_density_bins <- c(0, 200, 500, 10000, 50000, 100000, 
-                      150000, 200000, 300000, 9346644)
-pop_density_analysis %>%
-    as.data.frame() %>%
-    select(-geometry) %>%
-    mutate(pop_density_bin = cut(pop_density, pop_density_bins)) %>%
-    group_by(pop_density_bin) %>%
-    summarize(total_utilities = n(),
-              paperwork_10yr = mean(paperwork_violations_10yr), 
-              paperwork_5yr = mean(paperwork_violations_5yr), 
-              health_10yr = mean(healthbased_violations_10yr), 
-              health_5yr = mean(healthbased_violations_5yr)) 
-
-# checking out data by quantles: 
-pop_density_analysis %>%
-    as.data.frame() %>%
-    select(-geometry) %>%
-  mutate(pop_density_bin = cut(pop_density, 
-                             breaks = c(quantile(pop_density, 
-                                                 probs = seq(0, 1, by = 0.20), 
-                                                 na.rm = TRUE)), 
-                             include.lowest = TRUE)) %>%
-  group_by(pop_density_bin) %>%
-  summarize(total_utilities = n(),
-            paperwork_10yr = mean(paperwork_violations_10yr), 
-            paperwork_5yr = mean(paperwork_violations_5yr), 
-            health_10yr = mean(healthbased_violations_10yr), 
-            health_5yr = mean(healthbased_violations_5yr), 
-            mean_mhi = mean(estimate_mhi, na.rm = T)) %>%
-  mutate(quantile = c("0-20","20-40","40-60","60-80","80-100"))
-
-# Overall findings: 
-# - Most utilities have a population density of 0-50,000
-# - utilities with a population density between 0-10,000 and between 
-#   100000 - 150000 have the highest mean health-based violations over 
-#   the past 5 years, and similar trends are found if you look over the past 
-#   ten years. 
-# - broadly speaking - mean health-based violations are highest for systems 
-#   that serve communities with small population densities - so more 
-#   rural systems. 
-# - Mean paperwork violations over the past 5 and ten years are highest for utilities
-#   with a population density between 100000-200000 
-# - By quantiles: 
-#     - Utilities that fall within the lowest population density quantile 
-#       (0 - 2,330) have more mean health-based violations. 
-#     - Utilities that fall within the 20-40 quartile (2,330 - 7,490) 
-#       have the highest mean paperwork violations over the past 5 and 10 years.  
-```
-
 ## What languages are spoken by those served?
 ```{r}
-# census <- demo$census
-# grabbing language spoken at home: 
+# grabbing language spoken at home and merging with key stats of interest: 
 lang <- census %>%
   select(pwsid, estimate_only_english_per:estimate_other_lang_per) %>%
   as.data.frame() %>%
   select(-geometry)
-
 analysis_keys <- keys$analysis_keys
 lang_analysis <- merge(lang, analysis_keys, by = "pwsid") 
 
-# plot to see where we're at: 
+# plot to see what the data look like: 
 lang_analysis_long <- pivot_longer(lang_analysis, 
                                    cols = c("estimate_only_english_per", 
-                                   "estimate_other_lang_per"))
+                                            "estimate_other_lang_per"))
 ggplot(lang_analysis,
        aes(x = estimate_only_english_per)) +
   geom_histogram()
@@ -766,8 +605,6 @@ ggplot(lang_analysis, aes(x = estimate_only_english_per,
   geom_smooth(data = lang_analysis %>% filter(healthbased_violations_5yr>0), 
              color = "red") + 
   labs(x = "% Only Speak English", y = "% POC") 
-  # ylim(0, 80) + 
-  # xlim(0, 100)
 
 # language and mhi
 ggplot(lang_analysis, aes(x = estimate_only_english_per, 
@@ -780,15 +617,6 @@ ggplot(lang_analysis, aes(x = estimate_only_english_per,
   geom_smooth(data = lang_analysis %>% filter(healthbased_violations_5yr>0), 
               color = "red") + 
   labs(x = "% Only Speak English", y = "MHI") 
-  # ylim(0, 300000) + 
-  # xlim(0, 100)
-
-# how does language relate to health-based viols:
-ggplot(lang_analysis, aes(x = estimate_only_english_per, 
-                          y = healthbased_violations_5yr)) + 
-  geom_point() + 
-  geom_smooth(color = "grey") + 
-  theme_minimal()
 
 # checking out binned results in table form: 
 lang_analysis %>%
@@ -821,19 +649,18 @@ lang_analysis %>%
   mutate(quantile = c("0-20","20-40","40-60","60-80","80-100", "NA")) %>%
   relocate(quantile, .after = lang_bin)
 
-# quick stats to understand how many serve populations >= 60% speak only 
-# english 
+# how many serve populations >= 60% speak only english at home?
 lang_analysis %>%
   filter(estimate_only_english_per >= 60) %>%
   count()
 
+# comparisons with East TX: ###################################################
 # can we do boxplots to show comparisons with east TX:
 english_TX <- demo$census %>%
   select(pwsid, estimate_only_english_per) %>%
   as.data.frame() %>%
   select(-geometry)
 
-# merging with analysis keys for main stats of interest: 
 analysis_keys <- keys$analysis_keys
 english_TX <- merge(english_TX, analysis_keys, by = "pwsid") %>%
   mutate(flag = "TX") %>%
@@ -855,7 +682,7 @@ ggplot(all_lang, aes(x = flag, y = estimate_only_english_per,
   theme(legend.position = "none")
 
 
-# Overall findings 
+# Overall findings: ########################################################### 
 #   - to no surprise, the higher % that speak English at home, the lower the 
 #     % POC. Based on the trends, it also appears that systems with health-based  
 #     violations are concentrated around systems that serve communities where 
@@ -882,7 +709,6 @@ ggplot(all_lang, aes(x = flag, y = estimate_only_english_per,
 
 ## What nationality/immigration status reflect those seved? 
 ```{r}
-# census <- demo$census
 # grabbing immigration status: 
 immi_status <- census %>%
   select(pwsid, estimate_foreign_per) %>%
@@ -896,8 +722,6 @@ ggplot(immi_status, aes(x = estimate_foreign_per)) +
 # how does immigration status relate to poc, mhi, and sdwis violations: 
 analysis_keys <- keys$analysis_keys
 immi_analysis <- merge(immi_status, analysis_keys, by = "pwsid") 
-
-# logically, as % POC increases, % immigrant status increases 
 ggplot(immi_analysis, aes(x = estimate_foreign_per, 
                           y = estimate_poc_alone_per)) + 
   geom_point() + 
@@ -909,8 +733,6 @@ ggplot(immi_analysis, aes(x = estimate_foreign_per,
   geom_smooth(data = immi_analysis %>% filter(healthbased_violations_5yr>0), 
              color = "red") + 
   labs(x = "% Immigrant Status", y = "%POC") 
-  # xlim(0, 80) + 
-  # ylim(0, 100)
 
 # how does immigrant status relate to mhi?
 ggplot(immi_analysis, aes(x = estimate_foreign_per, 
@@ -924,8 +746,6 @@ ggplot(immi_analysis, aes(x = estimate_foreign_per,
   geom_smooth(data = immi_analysis %>% filter(healthbased_violations_5yr>0), 
              color = "red") +
   labs(x = "% Immigrant Status", y = "MHI")
-  # xlim(0, 80) + 
-  # ylim(0, 250000)
 
 # checking out binned results in table form: 
 immi_analysis %>%
@@ -959,24 +779,27 @@ immi_analysis %>%
   relocate(quantile, .after = immi_bin)
 
 
-
-# can we do boxplots to show comparisons with east TX:
+# comparisons with East TX: ###################################################
 immi_TX <- demo$census %>%
   select(pwsid, estimate_foreign_per) %>%
   as.data.frame() %>%
-  select(-geometry)
+  select(-geometry) %>%
+  mutate(flag = "TX")
+
+immi_analysis_etx <- demo$census %>%
+  select(pwsid, east_tx_flag, estimate_foreign_per) %>%
+  as.data.frame() %>%
+  select(-geometry) %>%
+  filter(east_tx_flag == "yes") %>%
+  mutate(flag = "East TX") %>%
+  select(-east_tx_flag)
+
+all_immi <- rbind(immi_TX, immi_analysis_etx)
 
 # merging with analysis keys for main stats of interest: 
 analysis_keys <- keys$analysis_keys
-immi_TX <- merge(immi_TX, analysis_keys, by = "pwsid") %>%
-  mutate(flag = "TX") %>%
+all_immi <- merge(all_immi, analysis_keys, by = "pwsid") %>%
   select(pwsid, estimate_foreign_per, flag)
-
-immi_analysis_etx <- immi_analysis %>%
-  select(pwsid, estimate_foreign_per) %>%
-  mutate(flag = "East TX")
-
-all_immi <- rbind(immi_TX, immi_analysis_etx)
 
 ggplot(all_immi, aes(x = flag, y = estimate_foreign_per,
                     fill = flag)) + 
@@ -995,7 +818,7 @@ mean(etx_immi$estimate_foreign_per, na.rm = T)
 median(etx_immi$estimate_foreign_per, na.rm = T)
 
 
-# Overall findings: 
+# Overall findings: ############################################################
 # - 83.14% of pwsids serve communities where less than 20% immigrated from a 
 #   different county. 
 
@@ -1036,12 +859,8 @@ median(etx_immi$estimate_foreign_per, na.rm = T)
 # NOTE: data here are also conservative - hcf is further modified by 
 # unemployment rate hcf and population decline hcf, which can only 
 # increase the chance of being identified as disadvantaged 
-
 # NOTE: the water affordability data is NOT comprehensive - only has ~706 
 # unique pwsids 
-# aff <- fin$TX_affordability_DAC %>%
-#   as.data.frame() %>%
-#   select(-c(geometry, estimate_mhi))
 
 # how does hcf  relate to poc, mhi, and sdwis violations: 
 analysis_keys <- keys$analysis_keys
@@ -1059,13 +878,8 @@ ggplot(aff_analysis, aes(x = hcf*100,
   geom_smooth(data = aff_analysis %>% filter(healthbased_violations_5yr>0), 
              color = "red") + 
   labs(x = "Household Cost Factor", y = "%POC") 
-  # xlim(0, 5) + 
-  # ylim(0, 85)
-  # geom_vline(xintercept= c(0, 1.5, 3), lty = "dashed")
 
-# how does household cost factor relate to MHI?
-# that ~makes sense~ since mhi was used to calculate MHI - this graph 
-# might be useless 
+# how does household cost factor relate to MHI? should be a strong relationship
 ggplot(aff_analysis, aes(x = hcf*100,
                           y = estimate_mhi)) +
   geom_point() +
@@ -1077,20 +891,6 @@ ggplot(aff_analysis, aes(x = hcf*100,
   geom_smooth(data = aff_analysis %>% filter(healthbased_violations_5yr>0),
              color = "red")  + 
   labs(x = "Household Cost Factor", y = "MHI")
-  # xlim(0, 5) + 
-  # ylim(0, 250000)
-
-# how does hcf relate to health-based violations? 
-ggplot(aff_analysis, aes(x = hcf, 
-                          y = healthbased_violations_5yr)) + 
-  geom_point() + 
-  geom_smooth(color = "grey") + 
-  theme_minimal() +
-  # geom_point(data = aff_analysis %>% filter(healthbased_violations_5yr>0), 
-  #            color = "red") +
-  # geom_smooth(data = aff_analysis %>% filter(healthbased_violations_5yr>0), 
-  #            color = "red") + 
-  labs(x = "Household Cost Factor", y = "Health-based Violations: 5 years")
 
 # mean and median: 
 mean(aff_analysis$hcf*100, na.rm = T)
@@ -1125,11 +925,17 @@ aff_analysis %>%
             health_5yr = mean(healthbased_violations_5yr), 
             mean_mhi = mean(estimate_mhi, na.rm = T), 
             mean_poc = mean(estimate_poc_alone_per, na.rm = T)) 
-  # mutate(quantile = c("0-25","25-50","50-75","75-100", "NA")) %>%
-  # relocate(quantile, .after = aff_bin)
 
 
-# gotta map this: 
+# comparisons with East TX #####################################################
+# creating data frames for TX - can filter for east TX from here:  
+aff_TX <- fin$TX_affordability_DAC %>%
+  as.data.frame() %>%
+  as.data.frame() %>%
+  select(-c(geometry, estimate_mhi))
+aff_analysis <- merge(aff_TX, analysis_keys, by = "pwsid") 
+
+# what does hcf look like spatially? 
 aff_analysis_sf <- aff_analysis %>%
   st_as_sf() %>%
   st_transform(., crs = st_crs(demo$census))
@@ -1141,7 +947,8 @@ hcf_pal <- colorNumeric(
 
 leaflet() %>%
   addProviderTiles(providers$CartoDB.VoyagerNoLabels, group = "Toner Lite") %>%
-  addPolygons(data = aff_analysis_sf,
+  addPolygons(data = aff_analysis_sf,  
+              # %>% filter(east_tx_flag == "yes"),
               fillOpacity = 0.9,
               # opacity = 9,
               color = ~hcf_pal(hcf*100),
@@ -1151,10 +958,9 @@ leaflet() %>%
   addLegend("bottomright",
             pal = hcf_pal,
             values = aff_analysis_sf$hcf*100,
-            title = "HCF",
             opacity = 1)
 
-# mapping water rates in TX: 
+# what do water rates look like spatially?
 aff_analysis_sf <- aff_analysis_sf %>%
   mutate(total_water = total_water_year + total_sewer_year)
 water_rate_pal <- colorNumeric(
@@ -1164,8 +970,6 @@ water_rate_pal <- colorNumeric(
 leaflet() %>%
   addProviderTiles(providers$CartoDB.VoyagerNoLabels, group = "Toner Lite") %>%
   addPolygons(data = aff_analysis_sf, 
-                # filter(east_tx_flag == "yes"),
-                # 
               fillOpacity = 0.9,
               # opacity = 9,
               color = ~water_rate_pal(total_water),
@@ -1178,7 +982,8 @@ leaflet() %>%
             title = "Annual Water Rate (Water + Sewer; $)",
             opacity = 1)
 
-# grabbing mean stats for water afforability in TX and east TX: 
+
+# grabbing mean stats for water affordability in TX and east TX: 
 mean(aff_analysis_sf$total_water_year)
 mean(aff_analysis_sf$total_sewer_year)
 median(aff_analysis_sf$total_water_year)
@@ -1192,9 +997,9 @@ mean(etx_aff$total_sewer_year)
 median(etx_aff$total_water_year)
 median(etx_aff$total_sewer_year)
 
+
 # how does this compare to mhi? creating a map of MHI across east TX: 
-census <- demo$census %>%
-  filter(east_tx_flag == "yes")
+census <- demo$census
 mhi_pal <- colorNumeric(
   palette = viridis::viridis(9),
   domain = census$estimate_mhi)
@@ -1218,16 +1023,12 @@ leaflet() %>%
             opacity = 1)
 
 
-# can we do boxplots to show comparisons with east TX:
+# box plots to show comparisons with East TX: 
 hcf_TX <- fin$TX_affordability_DAC %>%
   select(pwsid, hcf) %>%
   as.data.frame() %>%
   select(-geometry) %>%
   mutate(flag = "TX")
-
-# merging with analysis keys for main stats of interest: 
-e_pwsids <- keys$analysis_keys %>%
-  filter(east_tx_flag == "yes")
 
 hcf_eTX <- aff_analysis %>%
   as.data.frame() %>%
