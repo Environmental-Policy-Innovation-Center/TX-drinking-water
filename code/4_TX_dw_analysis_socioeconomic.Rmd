@@ -351,7 +351,8 @@ leaflet() %>%
 # making another histogram showing racial breakdown histograms by comparing 
 # east TX: 
 race_stats_TX <- demo$census %>%
-  select(pwsid, estimate_white_alone_per:estimate_mixed_alone_per, 
+  select(pwsid, 
+         estimate_white_alone_per:estimate_mixed_alone_per, 
          estimate_poc_alone_per, estimate_hisp_alone_per, estimate_mhi) %>%
   as.data.frame(.) %>%
   select(-geometry) %>%
@@ -659,26 +660,25 @@ lang_analysis %>%
 english_TX <- demo$census %>%
   select(pwsid, estimate_only_english_per) %>%
   as.data.frame() %>%
-  select(-geometry)
+  select(-geometry) %>%
+  mutate(flag = "TX")
 
-analysis_keys <- keys$analysis_keys
-english_TX <- merge(english_TX, analysis_keys, by = "pwsid") %>%
-  mutate(flag = "TX") %>%
-  select(pwsid, estimate_only_english_per, flag)
-
-lang_analysis <- lang_analysis %>%
-  select(pwsid, estimate_only_english_per) %>%
+english_eTX <- demo$census %>%
+  select(pwsid, east_tx_flag, estimate_only_english_per) %>%
+  as.data.frame() %>%
+  select(-geometry) %>%
+  filter(east_tx_flag == "yes") %>%
+  select(-east_tx_flag) %>%
   mutate(flag = "East TX")
 
-all_lang <- rbind(english_TX, lang_analysis)
-all_lang_long <- all_lang
+all_lang_long <- rbind(english_TX, english_eTX)
 
-ggplot(all_lang, aes(x = flag, y = estimate_only_english_per,
+ggplot(all_lang_long, aes(x = flag, y = estimate_only_english_per,
                     fill = flag)) + 
   geom_boxplot(alpha = 0.5) + 
   scale_fill_discrete(name = "") +
   theme_minimal()  + 
-  labs(y = "Percent Speaks English at Home", x = "") + 
+  labs(y = "Percent Speaks Only English at Home", x = "") + 
   theme(legend.position = "none")
 
 
@@ -957,6 +957,7 @@ leaflet() %>%
                 "; hcf: ", round(aff_analysis_sf$hcf, 2))) %>%
   addLegend("bottomright",
             pal = hcf_pal,
+            title = "HCF",
             values = aff_analysis_sf$hcf*100,
             opacity = 1)
 
@@ -1009,10 +1010,10 @@ leaflet() %>%
   addPolygons(data = census,
               fillOpacity = 0.9,
               # opacity = 9,
-              stroke = TRUE, 
-              color = "black", 
-              # color = ~mhi_pal(estimate_mhi),
-              fillColor = ~mhi_pal(estimate_mhi),
+              # stroke = TRUE, 
+              # color = "black", 
+              color = ~mhi_pal(estimate_mhi),
+              # fillColor = ~mhi_pal(estimate_mhi),
               weight = 1,
               label = paste0("pwsid: ", aff_analysis_sf$pwsid,
                              "; hcf: ", round(aff_analysis_sf$total_water_year, 2))) %>%
@@ -1024,6 +1025,8 @@ leaflet() %>%
 
 
 # box plots to show comparisons with East TX: 
+east_tx_pwsids <- demo$census %>% 
+  filter(east_tx_flag == "yes")
 hcf_TX <- fin$TX_affordability_DAC %>%
   select(pwsid, hcf) %>%
   as.data.frame() %>%
@@ -1033,7 +1036,7 @@ hcf_TX <- fin$TX_affordability_DAC %>%
 hcf_eTX <- aff_analysis %>%
   as.data.frame() %>%
   select(-geometry) %>%
-  filter(pwsid %in% e_pwsids$pwsid) %>%
+  filter(pwsid %in% east_tx_pwsids$pwsid) %>%
   select(pwsid, hcf) %>%
   mutate(flag = "East TX")
 
@@ -1061,6 +1064,91 @@ ggplot(aff_analysis, aes(x = total_water_year +
              color = "red")  + 
   labs(x = "Annual Water Cost (Water + Sewer)", y = "MHI")
 
+# what are the characteristic of various bins of income? 
+mhi_analysis <- demo$census %>%
+  select(pwsid, estimate_mhi) %>%
+  as.data.frame() %>%
+  select(-geometry) %>%
+  left_join(keys$analysis_keys)
+
+mhi_analysis %>%
+  as.data.frame() %>%
+  select(-geometry) %>%
+  mutate(mhi_bin = cut(estimate_mhi, 
+                       breaks = c(quantile(estimate_mhi, 
+                                           probs = seq(0, 1, by = 0.2), 
+                                           na.rm = TRUE)), 
+                       include.lowest = TRUE)) %>%
+  group_by(mhi_bin) %>%
+  summarize(total_utilities = n(),
+            paperwork_10yr = mean(paperwork_violations_10yr), 
+            paperwork_5yr = mean(paperwork_violations_5yr), 
+            health_10yr = mean(healthbased_violations_10yr), 
+            health_5yr = mean(healthbased_violations_5yr), 
+            mean_poc = mean(estimate_poc_alone_per, na.rm = T)) 
+
+
+# what about the lowest quintile of income? * added from water team call
+# checking out lowest quintile of income
+mhi <- demo$census %>%
+  select(pwsid, estimate_mhi)
+# by quintile: 
+mhi %>%
+  as.data.frame() %>%
+  select(-geometry) %>%
+  mutate(mhi_bin = cut(estimate_mhi, 
+                        breaks = c(quantile(estimate_mhi, 
+                                            probs = seq(0, 1, by = 0.20), 
+                                            na.rm = TRUE)), 
+                        include.lowest = TRUE)) %>%
+  group_by(mhi_bin) %>%
+  summarize(total_utilities = n()) %>%
+  mutate(quintiles = c("0-20","20-40","40-60","60-80","80-100", "NA"))
+# lower 20% = $15,600 - $49,600 inclusive  
+
+# checking out characteristics of this group: 
+lowest_quintile_mhi <- demo$census %>%
+  filter(estimate_mhi <= 49600) 
+# there are 1,117, 363 of which are in east tx
+
+# interested in seeing where these are: 
+mhi_pal_mini <- colorNumeric(
+  palette = viridis::viridis(9),
+  domain = mhi$estimate_mhi)
+
+leaflet() %>%
+  addProviderTiles(providers$CartoDB.VoyagerNoLabels, group = "Toner Lite") %>%
+  addPolygons(data = mhi,
+              fillOpacity = 0.9,
+              color = ~mhi_pal_mini(estimate_mhi),
+              weight = 1,
+              label = paste0("pwsid: ", mhi$pwsid)) %>%
+  addPolygons(data = lowest_quintile_mhi,
+              fillOpacity = 0.9,
+              color = "red",
+              weight = 1) %>%
+  addLegend("bottomright", 
+            colors = c("red"),
+            labels = c(""),
+            title = "Lowest Quintile",
+            opacity = 1) %>%
+  addLegend("bottomright",
+            pal = mhi_pal_mini,
+            values = mhi$estimate_mhi,
+            title = "MHI",
+            opacity = 1) 
+
+# What are these utilities paying for water? 
+aff_analysis %>%
+    filter(pwsid %in% lowest_quintile_mhi$pwsid) %>%
+  # filter(!(pwsid %in% lowest_quintile_mhi$pwsid)) %>%
+  mutate(total_water_sewer_year = total_water_year + 
+           total_sewer_year) %>%
+  summarize(mean_total_water_sewer = mean(total_water_sewer_year), 
+            mean_total_water = mean(total_water_year), 
+            meean_total_sewer = mean(total_sewer_year))
+
+
 
 # Overall findings: 
 # - utilities that serve communities where the water is less affordable 
@@ -1077,6 +1165,289 @@ ggplot(aff_analysis, aes(x = total_water_year +
 # the lowest MHI, generally lower %POC,  and the most health-based violations 
 # over the past five and ten years. 
 
+```
+
+## What ages reflect those served?
+```{r}
+# box plot to investigate each age bracket: 
+age_level_TX <- demo$census %>%
+  select(pwsid, estimate_ageunder_5_per:estimate_age60_61_per) %>%
+  as.data.frame() %>%
+  select(-geometry) %>%
+  mutate(flag = "TX")
+
+age_level_eTX <- demo$census %>%
+  select(pwsid, east_tx_flag, estimate_ageunder_5_per:estimate_age60_61_per) %>%
+  as.data.frame() %>%
+  select(-geometry) %>%
+  filter(east_tx_flag == "yes") %>%
+  select(-east_tx_flag) %>%
+  mutate(flag = "East TX")
+
+all_age <- rbind(age_level_TX, age_level_eTX)
+all_age <- pivot_longer(all_age, estimate_ageunder_5_per:estimate_age60_61_per)
+all_age$name <- as.factor(all_age$name)
+levels(all_age$name) <- c("Age 18-24", "Age 25-34", 
+                          "Age 35-44", "Age 45-54", 
+                          "Age 05-17", "Age 55-59", "Age 60-61", 
+                          "Age 0-5")
+
+age_order <- c("Age 0-5", "Age 05-17", "Age 18-24", "Age 25-34", 
+               "Age 35-44", "Age 45-54","Age 55-59", "Age 60-61") 
+
+# running boxplot: 
+ggplot(all_age, aes(x = factor(name, level = age_order),  
+                    y = value, 
+                    fill = flag)) + 
+  geom_boxplot(alpha = 0.5) + 
+  scale_fill_discrete(name = "") +
+  theme_minimal()  + 
+  labs(x = "", y = "Percent of Population") + 
+  coord_flip()
+
+# pulling out some summary stats: 
+all_age %>%
+  group_by(name, flag) %>%
+  summarize(mean_val = mean(value, na.rm = T))
+
+
+# creating a population chart - but need to grab actual numbers: 
+age_level_TX_pop <- demo$census %>%
+  select(pwsid, estimate_ageunder_5:estimate_age60_61) %>%
+  as.data.frame() %>%
+  select(-geometry) %>%
+  mutate(flag = "TX")
+
+age_level_eTX_pop <- demo$census %>%
+  select(pwsid, east_tx_flag, estimate_ageunder_5:estimate_age60_61) %>%
+  as.data.frame() %>%
+  select(-geometry) %>%
+  filter(east_tx_flag == "yes") %>%
+  select(-east_tx_flag) %>%
+  mutate(flag = "East TX")
+
+all_age_pop <- rbind(age_level_TX_pop, age_level_eTX_pop)
+all_age_pop <- pivot_longer(all_age_pop, estimate_ageunder_5:estimate_age60_61)
+all_age_pop$name <- as.factor(all_age_pop$name)
+levels(all_age_pop$name) <- c("Age 18-24", "Age 25-34", 
+                              "Age 35-44", "Age 45-54", 
+                              "Age 05-17", "Age 55-59", "Age 60-61", 
+                              "Age 0-5")
+
+age_order <- c("Age 0-5", "Age 05-17", "Age 18-24", "Age 25-34", 
+               "Age 35-44", "Age 45-54","Age 55-59", "Age 60-61") 
+
+all_age_pop %>% mutate( 
+  population = ifelse(flag=="TX", value*(-1), 
+                      value*1))%>% 
+  ggplot(aes(x = factor(name, level = age_order), 
+             y = population, fill = flag)) +  
+  geom_bar(stat = "identity") + 
+  coord_flip() + 
+  theme_minimal() + 
+  scale_fill_discrete(name = "") + 
+  labs(y = "Population", x = "Age Bin")
+```
+
+## What unemployment status reflect those served?
+```{r}
+# box plot to investigate each age bracket: 
+unemp_TX <- demo$census %>%
+  select(pwsid, estimate_laborforce_unemployed_per) %>%
+  as.data.frame() %>%
+  select(-geometry) %>%
+  mutate(flag = "TX")
+
+unemp_eTX <- demo$census %>%
+  select(pwsid, east_tx_flag, estimate_laborforce_unemployed_per) %>%
+  as.data.frame() %>%
+  select(-geometry) %>%
+  filter(east_tx_flag == "yes") %>%
+  select(-east_tx_flag) %>%
+  mutate(flag = "East TX")
+
+all_unep <- rbind(unemp_TX, unemp_eTX)
+
+# running boxplot: 
+ggplot(all_unep, aes(x = flag,  
+                    y = estimate_laborforce_unemployed_per, 
+                    fill = flag)) + 
+  geom_boxplot(alpha = 0.5) + 
+  scale_fill_discrete(name = "") +
+  theme_minimal()  + 
+  labs(x = "", y = "Percent of Labor Force Unemployed") 
+
+# what does this look like spatially?
+census <- demo$census 
+  # filter(east_tx_flag == "yes")
+unemp_pal <- colorNumeric(
+  palette = viridis::viridis(9),
+  domain = census$estimate_laborforce_unemployed_per)
+
+leaflet() %>%
+  addProviderTiles(providers$CartoDB.VoyagerNoLabels, group = "Toner Lite") %>%
+  addPolygons(data = census,
+              fillOpacity = 0.9,
+              color = ~unemp_pal(estimate_laborforce_unemployed_per),
+              weight = 1,
+              label = paste0("pwsid: ", census$pwsid, 
+                             "; % unemp: ", census$estimate_laborforce_unemployed_per)) %>%
+  addLegend("bottomright",
+            pal = unemp_pal,
+            values = census$estimate_laborforce_unemployed_per,
+            title = "% Unemployment",
+            opacity = 1) 
+
+# by quantile: 
+unemp_analysis <- demo$census %>%
+  # filter(east_tx_flag == "yes") %>%
+  select(pwsid, estimate_laborforce_unemployed_per) %>%
+  as.data.frame() %>%
+  left_join(keys$analysis_keys)
+  
+unemp_analysis  %>%
+  as.data.frame() %>%
+  select(-geometry) %>%
+  mutate(unemp_bin = cut(estimate_laborforce_unemployed_per, 
+                       breaks = c(quantile(estimate_laborforce_unemployed_per, 
+                                           probs = seq(0, 1, by = 0.20), 
+                                           na.rm = TRUE)), 
+                       include.lowest = TRUE)) %>%
+  group_by(unemp_bin) %>%
+  summarize(total_utilities = n(),
+            paperwork_10yr = mean(paperwork_violations_10yr), 
+            paperwork_5yr = mean(paperwork_violations_5yr), 
+            health_10yr = mean(healthbased_violations_10yr), 
+            health_5yr = mean(healthbased_violations_5yr), 
+            mean_mhi = mean(estimate_mhi, na.rm = T)) %>%
+  mutate(quantile = c("0-20","20-40","40-60","60-80","80-100", "NA")) %>%
+  relocate(quantile, .after = unemp_bin)
+
+ggplot(unemp_analysis, aes(x = estimate_laborforce_unemployed_per, 
+                          y = estimate_poc_alone_per)) + 
+  geom_point() + 
+  geom_smooth() + 
+  geom_smooth(color = "grey") + 
+  theme_minimal() +
+  geom_point(data = unemp_analysis %>% filter(healthbased_violations_5yr>0), 
+             color = "red") +
+  geom_smooth(data = unemp_analysis %>% filter(healthbased_violations_5yr>0), 
+             color = "red") + 
+  labs(x = "% Unemployed", y = "%POC") 
+
+# how does immigrant status relate to mhi?
+ggplot(unemp_analysis, aes(x = estimate_laborforce_unemployed_per, 
+                          y = estimate_mhi)) + 
+  geom_point() + 
+  geom_smooth() + 
+  geom_smooth(color = "grey") + 
+  theme_minimal() +
+  geom_point(data = unemp_analysis %>% filter(healthbased_violations_5yr>0), 
+             color = "red") +
+  geom_smooth(data = unemp_analysis %>% filter(healthbased_violations_5yr>0), 
+             color = "red") +
+  labs(x = "% Unemployed", y = "MHI")
+```
+
+## What economic status reflect households served?
+```{r}
+# box plot to investigate each age bracket: 
+hh_pov_TX <- demo$census %>%
+  select(pwsid, estimate_hh_below_pov_per) %>%
+  as.data.frame() %>%
+  select(-geometry) %>%
+  mutate(flag = "TX")
+
+hh_pov_eTX <- demo$census %>%
+  select(pwsid, east_tx_flag, estimate_hh_below_pov_per) %>%
+  as.data.frame() %>%
+  select(-geometry) %>%
+  filter(east_tx_flag == "yes") %>%
+  select(-east_tx_flag) %>%
+  mutate(flag = "East TX")
+
+all_hh_pov <- rbind(hh_pov_TX, hh_pov_eTX)
+
+# running boxplot: 
+ggplot(all_hh_pov, aes(x = flag,  
+                    y = estimate_hh_below_pov_per, 
+                    fill = flag)) + 
+  geom_boxplot(alpha = 0.5) + 
+  scale_fill_discrete(name = "") +
+  theme_minimal()  + 
+  labs(x = "", y = "Percent of Households Under the Poverty Line") 
+
+# what does this look like spatially?
+census <- demo$census %>%
+  filter(east_tx_flag == "yes")
+hh_pov_pal <- colorNumeric(
+  palette = viridis::viridis(9),
+  domain = census$estimate_hh_below_pov_per)
+
+leaflet() %>%
+  addProviderTiles(providers$CartoDB.VoyagerNoLabels, group = "Toner Lite") %>%
+  addPolygons(data = census,
+              fillOpacity = 0.9,
+              color = ~hh_pov_pal(estimate_hh_below_pov_per),
+              weight = 1,
+              label = paste0("pwsid: ", census$pwsid, 
+                             "; % hh poverty: ", census$estimate_hh_below_pov_per)) %>%
+  addLegend("bottomright",
+            pal = hh_pov_pal,
+            values = census$estimate_hh_below_pov_per,
+            title = "% Households in Poverty",
+            opacity = 1) 
+
+# by quantile: 
+hh_pov_analysis <- demo$census %>%
+  filter(east_tx_flag == "yes") %>%
+  select(pwsid, estimate_hh_below_pov_per) %>%
+  as.data.frame() %>%
+  left_join(keys$analysis_keys)
+  
+hh_pov_analysis  %>%
+  as.data.frame() %>%
+  select(-geometry) %>%
+  mutate(hh_pov_bin = cut(estimate_hh_below_pov_per, 
+                       breaks = c(quantile(estimate_hh_below_pov_per, 
+                                           probs = seq(0, 1, by = 0.20), 
+                                           na.rm = TRUE)), 
+                       include.lowest = TRUE)) %>%
+  group_by(hh_pov_bin) %>%
+  summarize(total_utilities = n(),
+            paperwork_10yr = mean(paperwork_violations_10yr), 
+            paperwork_5yr = mean(paperwork_violations_5yr), 
+            health_10yr = mean(healthbased_violations_10yr), 
+            health_5yr = mean(healthbased_violations_5yr), 
+            mean_mhi = mean(estimate_mhi, na.rm = T)) %>%
+  mutate(quantile = c("0-20","20-40","40-60","60-80","80-100", "NA")) %>%
+  relocate(quantile, .after = hh_pov_bin)
+
+# plotting relationships: 
+ggplot(hh_pov_analysis, aes(x = estimate_hh_below_pov_per, 
+                          y = estimate_poc_alone_per)) + 
+  geom_point() + 
+  geom_smooth() + 
+  geom_smooth(color = "grey") + 
+  theme_minimal() +
+  geom_point(data = hh_pov_analysis %>% filter(healthbased_violations_5yr>0), 
+             color = "red") +
+  geom_smooth(data = hh_pov_analysis %>% filter(healthbased_violations_5yr>0), 
+             color = "red") + 
+  labs(x = "% Households in Poverty", y = "%POC") 
+
+# how does immigrant status relate to mhi?
+ggplot(hh_pov_analysis, aes(x = estimate_hh_below_pov_per, 
+                          y = estimate_mhi)) + 
+  geom_point() + 
+  geom_smooth() + 
+  geom_smooth(color = "grey") + 
+  theme_minimal() +
+  geom_point(data = hh_pov_analysis %>% filter(healthbased_violations_5yr>0), 
+             color = "red") +
+  geom_smooth(data = hh_pov_analysis %>% filter(healthbased_violations_5yr>0), 
+             color = "red") +
+  labs(x = "% Households in Poverty", y = "MHI")
 ```
 
 ## Bonus look at stats for cws in TX and comparisons across different scales: 
@@ -1193,6 +1564,3 @@ etx_wide <- etx_wide %>%
 summary(etx_wide)
 sum(etx_wide$estimate_total_pop)
 ```
-Rabbit holes: 
- - deeper dive into education categories - basically just have no schooling and prof degrees at the moment
-- investigate relationship between hcf (water affordability), and population density. Based on the map, I have an inkling that they may be related. 

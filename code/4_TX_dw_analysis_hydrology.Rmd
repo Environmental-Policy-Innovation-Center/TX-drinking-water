@@ -2,6 +2,7 @@
 title: "TX Drinking Water Data Analysis - Hydrology"
 author: "EmmaLi Tsai"
 date: "2024-02-23"
+last_updated: "2024-03-21"
 output: html_document
 ---
 ## Loading packages 
@@ -826,6 +827,7 @@ iup <- fin$TX_PPL_SFY14_24 %>%
 ```
 
 ## How much water loss does the system have?
+NOTE: put this question on pause for now (3/21/2024)
 ```{r}
 # real loss GMD = gallons/mile/day 
 # GCD = gallons/connection/day 
