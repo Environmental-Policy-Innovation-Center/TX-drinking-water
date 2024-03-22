@@ -1450,7 +1450,120 @@ ggplot(hh_pov_analysis, aes(x = estimate_hh_below_pov_per,
   labs(x = "% Households in Poverty", y = "MHI")
 ```
 
-## Bonus look at stats for cws in TX and comparisons across different scales: 
+## Has the community been identified as disadvantaged by CEJST?
+```{r}
+cejst <- demo$cejst
+pwsids <- demo$census$pwsid
+census <- demo$census
+
+# will need to be ~croswalked~
+tract_crosswalk <- aws.s3::s3read_using(read.csv, 
+                                         object = "s3://tech-team-data/pws_crosswalk/pws_census_tract_weighted_crosswalk.csv") %>%
+  select(-X) %>%
+  filter(pwsid %in% pwsids) %>%
+  # if the geoid is missing prefix 0, add it back in
+  mutate(tract_geoid = as.character(tract_geoid),
+         tract_geoid = case_when(
+           str_length(tract_geoid) == 10 ~ paste0(0, tract_geoid),
+           TRUE ~ tract_geoid
+         )) %>%
+  filter(!(is.na(tract_geoid)))
+
+# CEJST was made off of 2010 tract boundaries - will need to be crosswalked
+# for the crosswalk 
+tract_2010_2020_crosswalk <- read.table("https://www2.census.gov/geo/docs/maps-data/data/rel2020/tract/tab20_tract20_tract10_natl.txt", sep = "|", header = TRUE)
+full_crosswalk <- merge(tract_crosswalk, tract_2010_2020_crosswalk, 
+                        by.x = "tract_geoid", 
+                        by.y = "GEOID_TRACT_20", all.x = TRUE)
+
+# merging based on 2010 geoids
+cejst_cross <- merge(cejst, 
+                     full_crosswalk, 
+                     by.x = "census_tract_2010_id", 
+                     by.y = "GEOID_TRACT_10", all.y = T) 
+
+# using weighted mean to calculate mean % disadvantaged for pwsids
+pwsid_disadv <- cejst_cross %>%
+  group_by(pwsid) %>%
+  summarize(per_disadv_weighted =
+              weighted.mean(percentage_of_tract_that_is_disadvantaged_by_area, 
+                            tract_parcel_weight, 
+                            na.rm = TRUE))
+
+# combining with key stats of interest: 
+key_stats <- keys$analysis_keys
+cejst_analysis <- merge(key_stats, pwsid_disadv, by = "pwsid", all.x = TRUE)
+# cejst_analysis <- cejst_analysis %>%
+#   filter(east_tx_flag == "yes")
+
+# plotting by disadv status: 
+cejst_pal <- colorNumeric(
+  palette = viridis::viridis(9),
+  domain = cejst_analysis$per_disadv_weighted)
+
+leaflet() %>%
+  addProviderTiles(providers$CartoDB.VoyagerNoLabels, group = "Toner Lite") %>%
+  addPolygons(data = cejst_analysis,
+              fillOpacity = 0.9,
+              color = ~cejst_pal(per_disadv_weighted),
+              weight = 1,
+              label = paste0("pwsid: ", cejst_analysis$pwsid, 
+                             "; % disadv: ", cejst_analysis$per_disadv_weighted)) %>%
+  addLegend("bottomright",
+            pal = cejst_pal,
+            values = cejst_analysis$per_disadv_weighted,
+            title = "% CEJST Disadv",
+            opacity = 1) 
+
+# box plot to investigate each age bracket: 
+dac_TX <- cejst_analysis %>%
+  select(pwsid, per_disadv_weighted) %>%
+  as.data.frame() %>%
+  select(-geometry) %>%
+  mutate(flag = "TX")
+mean(dac_TX$per_disadv_weighted, na.rm = T)
+
+dac_eTX <- cejst_analysis %>%
+  select(pwsid, east_tx_flag, per_disadv_weighted) %>%
+  as.data.frame() %>%
+  select(-geometry) %>%
+  filter(east_tx_flag == "yes") %>%
+  select(-east_tx_flag) %>%
+  mutate(flag = "East TX")
+mean(dac_eTX$per_disadv_weighted, na.rm = T)
+
+all_dac <- rbind(dac_TX, dac_eTX)
+
+# running boxplot: 
+ggplot(all_dac, aes(x = flag,  
+                    y = per_disadv_weighted, 
+                    fill = flag)) + 
+  geom_violin(alpha = 0.5) + 
+  # geom_histogram(stat = "identity", alpha = 0.5) + 
+  scale_fill_discrete(name = "") +
+  theme_minimal()  + 
+  labs(x = "", y = "Percent of PWSID Disadv by CEJST") 
+
+
+# looking at data by quantile of disadv status: 
+cejst_analysis %>%
+  as.data.frame() %>%
+  select(-geometry) %>%
+  mutate(dac_bin = cut(per_disadv_weighted, 
+                       breaks = c(unique(quantile(per_disadv_weighted, 
+                                           probs = seq(0, 1, by = 0.10), 
+                                           na.rm = TRUE))), 
+                       include.lowest = TRUE)) %>%
+  group_by(dac_bin) %>%
+  summarize(total_utilities = n(),
+            paperwork_10yr = mean(paperwork_violations_10yr), 
+            paperwork_5yr = mean(paperwork_violations_5yr), 
+            health_10yr = mean(healthbased_violations_10yr), 
+            health_5yr = mean(healthbased_violations_5yr), 
+            mean_mhi = mean(estimate_mhi, na.rm = T)) 
+```
+
+## Bonus look at stats for cws in TX and comparisons across different scales:
 ```{r}
 # grabbing stats at different scales: 
 census <- demo$census
