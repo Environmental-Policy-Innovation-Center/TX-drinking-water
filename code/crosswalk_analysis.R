@@ -105,7 +105,13 @@ east_interp <- interpolate %>%
   filter(pwsid %in% east_pwsid$pwsid)
 sum(east_interp$estimate)  # interpolating: 2,022,340
 
+# graph for viz: 
+tx_test <- pop_comp %>%
+  mutate(sdwis_crosswalk_per_off = ((SDWIS - crosswalk)/SDWIS)*100, 
+         sdiws_div_croswalk = SDWIS/crosswalk)
 
+ggplot(tx_test, aes(x = SDWIS, y = sdiws_div_croswalk)) + 
+  geom_point()
 
 # TX-wide summary: 
 # internet pop: 29,530,000
@@ -122,9 +128,103 @@ sum(east_interp$estimate)  # interpolating: 2,022,340
 # areal pop: 2,022,340
 
 
-tx_test <- pop_comp %>%
-  mutate(sdwis_crosswalk_per_off = ((SDWIS - crosswalk)/SDWIS)*100, 
-         sdiws_div_croswalk = SDWIS/crosswalk)
 
-ggplot(tx_test, aes(x = SDWIS, y = sdiws_div_croswalk)) + 
-  geom_point()
+# checkin out that well data from EPA ORD 
+wells <- aws.s3::s3read_using(read.csv, 
+                     object = "s3://tech-team-data/state-drinking-water/TX/raw/TX_bg_wellpop_EPAORD.csv") %>%
+  janitor::clean_names()
+
+well_pop <- wells %>%
+  select(geoid, x2020_population, population_served_by_wells_2020) %>%
+  mutate(x2020_population = readr::parse_number(x2020_population), 
+         population_served_by_wells_2020 = readr::parse_number(population_served_by_wells_2020)) %>%
+  mutate(population_not_wells = x2020_population - population_served_by_wells_2020, 
+         percent_cws = (population_not_wells/x2020_population)*100)
+
+# grabbing census geographies to plot this - using decennial census because 
+# that's what EPA's well data is based off of: 
+vars <- load_variables(2020, "pl")
+bg_census <- get_decennial(
+  geography = "block group",
+  variables = "P1_001N",
+  state = "TX",
+  year = 2020, 
+  geometry = TRUE
+)
+
+well_census <- merge(well_pop, bg_census, by.x = "geoid", by.y = "GEOID", 
+                     all.x = TRUE) %>%
+  st_as_sf()
+
+well_pal <- colorNumeric(
+  palette = viridis::mako(9),
+  domain = well_census$percent_cws)
+
+leaflet() %>%
+  addProviderTiles(providers$CartoDB.VoyagerNoLabels, group = "Toner Lite") %>%
+  addPolygons(data = well_census,
+              opacity = 0.9,
+              # stroke = TRUE,
+              # color = "black",
+              color = ~well_pal(percent_cws),
+              weight = 1,
+              label = paste0("% CWS: ", round(well_census$percent_cws, 2))) %>%
+  addLegend("bottomright",
+            pal = well_pal,
+            values = well_census$percent_cws,
+            title = "% CWS",
+            opacity = 1)
+
+sum(well_census$x2020_population)
+# population in TX (which excludes major cities, which are likely on CWS: 7,401,970)
+# population on wells (which excludes major cities): 2,493,742
+
+# so population on CWS (assuming population of 29,530,000): 27,036,258, or 
+# 91.56% of the population in TX
+
+# % population on wells (assuming population of 29,530,000): 8.11%
+
+
+# hmm - what if we remove intersecting polygons: 
+test <- st_intersection(demo$census)
+test <- st_relate(demo$census)
+
+test_summary <- test %>%
+  select(pwsid, n.overlaps) %>%
+  as.data.frame()
+  # group_by(pwsid) %>%
+  # summarize(n.overlaps.max = max(n.overlaps))
+
+intersections <- demo$census %>%
+  left_join(test_summary) %>%
+  filter(n.overlaps == 1)
+
+inter_pal <- colorNumeric(
+  palette = viridis::viridis(7),
+  domain = intersections$n.overlaps)
+
+leaflet() %>%
+  addProviderTiles(providers$CartoDB.VoyagerNoLabels, group = "Toner Lite") %>%
+  addPolygons(data = census, 
+              color = "grey", 
+              opacity = 0.6, 
+              weight = 1) %>%
+  addPolygons(data = st_sf(intersections),
+              opacity = 0.9,
+              color = "red",
+              weight = 1, 
+              label = paste0("Overlaps: ", intersections$n.overlaps)) 
+  # addLegend("bottomright",
+  #           pal = inter_pal,
+  #           values = intersections$n.overlaps,
+  #           title = "num overlaps",
+  #           opacity = 1)
+
+# what about differences? 
+diff <- st_difference(demo$census)
+leaflet() %>%
+  addProviderTiles(providers$CartoDB.VoyagerNoLabels, group = "Toner Lite") %>%
+  addPolygons(data = diff,
+              opacity = 0.9,
+              color = "red", 
+              weight = 1) 
