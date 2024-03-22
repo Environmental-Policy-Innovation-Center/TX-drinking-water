@@ -395,6 +395,7 @@ ggplot(all_race, aes(x = value, color = flag, fill = flag)) +
                        hjust=1)) 
 
 
+
 # Overall summary: ############################################################
 # - Texas is pretty segregated - % white alone is generally greater than 75%, 
 #   and very little mixing between white and other races (i.e., the spread of 
@@ -1066,13 +1067,14 @@ ggplot(aff_analysis, aes(x = total_water_year +
 
 # what are the characteristic of various bins of income? 
 mhi_analysis <- demo$census %>%
-  select(pwsid, estimate_mhi) %>%
+  select(pwsid, east_tx_flag, estimate_mhi) %>%
   as.data.frame() %>%
   select(-geometry) %>%
   left_join(keys$analysis_keys)
 
 mhi_analysis %>%
   as.data.frame() %>%
+  # filter(east_tx_flag == "yes") %>%
   select(-geometry) %>%
   mutate(mhi_bin = cut(estimate_mhi, 
                        breaks = c(quantile(estimate_mhi, 

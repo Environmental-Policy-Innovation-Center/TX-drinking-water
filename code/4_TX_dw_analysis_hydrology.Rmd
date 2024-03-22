@@ -341,6 +341,7 @@ viols %>%
 # skewed: 
 viols %>%
   as.data.frame() %>%
+  # filter(east_tx_flag == "yes") %>%
   select(-geometry) %>%
   mutate(viol_bin = cut(healthbased_violations_5yr, 
                        breaks = c(unique(quantile(healthbased_violations_5yr, 
@@ -415,6 +416,33 @@ ggplot(viols, aes(x = paperwork_violations_10yr,
   # xlim(0, 300) + 
   # ylim(0, 200)
 
+# how many pwsids in East TX haven't had any violations?
+viols %>%
+  as.data.frame() %>%
+  select(-geometry) %>%
+  filter(east_tx_flag == "yes") %>%
+  filter(healthbased_violations_5yr == 0) %>%
+  summarize(total = length(unique(pwsid)), 
+            mean_poc = mean(estimate_poc_alone_per, na.rm = T), 
+            mean_mhi = mean(estimate_mhi, na.rm = T), 
+              mean_healthbased_10yr = mean(healthbased_violations_10yr), 
+              mean_paperwork_5yr = mean(paperwork_violations_5yr), 
+              mean_paperwork_10yr = mean(paperwork_violations_10yr))
+
+# are violations related to population density? 
+pop_density <- demo$census %>%
+  select(pwsid, pop_density) %>%
+  as.data.frame() %>%
+  select(-geometry)
+viols_density <- viols %>%
+  left_join(pop_density)
+
+ggplot(viols_density, aes(x = pop_density, 
+                          y = healthbased_violations_5yr)) + 
+  geom_point() + 
+  xlim(0, 100000) + 
+  theme_minimal() + 
+  labs(x = "Population Density")
 
 # Quick Summary: 
 # 4542 pwsids in total 

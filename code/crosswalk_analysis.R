@@ -1,3 +1,14 @@
+# loading packages: 
+library(aws.s3)
+library(tidyverse)
+library(leaflet)
+library(sf)
+
+# loading lists:
+demo <- aws.s3::s3read_using(readRDS, 
+                             object = "s3://tech-team-data/state-drinking-water/TX/clean/TX_demographic_list.RData")
+
+
 # figuring out differences in population estimates: 
 census <- demo$census
 crosswalk <- census$estimate_total_pop
@@ -128,8 +139,9 @@ ggplot(tx_test, aes(x = SDWIS, y = sdiws_div_croswalk)) +
 # areal pop: 2,022,340
 
 
-
+######################
 # checkin out that well data from EPA ORD 
+######################
 wells <- aws.s3::s3read_using(read.csv, 
                      object = "s3://tech-team-data/state-drinking-water/TX/raw/TX_bg_wellpop_EPAORD.csv") %>%
   janitor::clean_names()
@@ -185,46 +197,71 @@ sum(well_census$x2020_population)
 # % population on wells (assuming population of 29,530,000): 8.11%
 
 
+###############
+# investigating overlapping sabs: 
+##############
 # hmm - what if we remove intersecting polygons: 
-test <- st_intersection(demo$census)
-test <- st_relate(demo$census)
+test <- st_intersection(demo$census, model = "closed")
 
 test_summary <- test %>%
   select(pwsid, n.overlaps) %>%
-  as.data.frame()
-  # group_by(pwsid) %>%
-  # summarize(n.overlaps.max = max(n.overlaps))
+  as.data.frame() %>%
+  select(-geometry)
 
-intersections <- demo$census %>%
-  left_join(test_summary) %>%
-  filter(n.overlaps == 1)
+intersections <- merge(census, test_summary, by = "pwsid", all.y = T)
 
+# finding total number of overlaps: 
+intersections_mini <- intersections %>%
+  group_by(pwsid) %>%
+  summarize(n.overlaps.total = sum(n.overlaps))
+
+# seeing where these are: 
 inter_pal <- colorNumeric(
   palette = viridis::viridis(7),
-  domain = intersections$n.overlaps)
-
+  domain = intersections_mini$n.overlaps.total, 
+  na.color = "grey")
 leaflet() %>%
   addProviderTiles(providers$CartoDB.VoyagerNoLabels, group = "Toner Lite") %>%
-  addPolygons(data = census, 
-              color = "grey", 
-              opacity = 0.6, 
-              weight = 1) %>%
-  addPolygons(data = st_sf(intersections),
-              opacity = 0.9,
-              color = "red",
+  addPolygons(data = intersections_mini,
+              opacity = 0.7,
+              color = ~inter_pal(n.overlaps.total),
               weight = 1, 
-              label = paste0("Overlaps: ", intersections$n.overlaps)) 
-  # addLegend("bottomright",
-  #           pal = inter_pal,
-  #           values = intersections$n.overlaps,
-  #           title = "num overlaps",
-  #           opacity = 1)
+              label = paste0("Overlaps: ", intersections_mini$n.overlaps.total)) %>%
+  addLegend("bottomright",
+            pal = inter_pal,
+            values = intersections_mini$n.overlaps.total,
+            title = "num overlaps",
+            opacity = 1)
+# so really the polygon that gets flagged as the most intersections 
+# are just the ones that surround cities, where you have a bunch of close sabs. 
+# unfortunately the ones that I want to remove (i.e., utilities in Houston 
+# that are circles and overlap almost completely with the utility that serves 
+# the city), only have an overlap = 1, where houston has overlap = 261. 
+# ideally, I'd want to keep houston but remove the smaller circles 
 
-# what about differences? 
-diff <- st_difference(demo$census)
+# slicing data based on number of intersections: 
+ggplot(intersections_mini, aes(x = n.overlaps.total)) + 
+  geom_histogram()
+
+intersection_cap <- intersections_mini %>%
+  filter(n.overlaps.total < 60)
+demo$census %>%
+  as.data.frame() %>%
+  select(-geometry) %>%
+  # filter(tier == 1) %>%
+  # filter(primacy_agency_code == "TX") %>%
+  filter(pwsid %in% intersection_cap$pwsid) %>%
+  summarize(total_pop = sum(estimate_total_pop, na.rm = T))
+
+# just grabbing tier 1: 44,096,938
+# just grabbing tier 1 and primacy agency code == "TX": 44,055,111
+# if you just grab sabs where number of intersections is < 60: 37,670,246
+
+
+crop <- st_crop(demo$census, demo$census)
 leaflet() %>%
   addProviderTiles(providers$CartoDB.VoyagerNoLabels, group = "Toner Lite") %>%
-  addPolygons(data = diff,
-              opacity = 0.9,
-              color = "red", 
-              weight = 1) 
+  addPolygons(data = crop,
+              opacity = 0.7,
+              color = "red",
+              weight = 1)
