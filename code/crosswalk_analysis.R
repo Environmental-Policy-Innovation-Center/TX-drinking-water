@@ -1,32 +1,42 @@
+###############################################################################
+# Investigating different crosswalk methods for TX
+# Author: EmmaLi Tsai 
+# Date: March 19 2024
+###############################################################################
 # loading packages: 
 library(aws.s3)
 library(tidyverse)
 library(leaflet)
 library(sf)
+library(areal)
+library(tidycensus)
 
-# loading lists:
+# loading lists of data 
 demo <- aws.s3::s3read_using(readRDS, 
                              object = "s3://tech-team-data/state-drinking-water/TX/clean/TX_demographic_list.RData")
-
-
+keys <- aws.s3::s3read_using(readRDS, 
+                             object = "s3://tech-team-data/state-drinking-water/TX/clean/TX_merging_keys_list.RData")
+###############################################################################
+# TX population methods: 
+###############################################################################
 # figuring out differences in population estimates: 
 census <- demo$census
 crosswalk <- census$estimate_total_pop
 sdwis <- census$population_served_count
-
+# grabbing just sdwis and crosswalk estimate: 
 pop_comp <- census %>%
   select(pwsid, population_served_count, estimate_total_pop)
 
-# trying areal interpolation: 
-# grabbing census tracts: 
+## trying areal interpolation: 
 tract_geo <- tidycensus::get_acs(
   geography = "tract", 
   variables = "B01003_001", 
   state = c("TX"),
-  year = 2021,
+  year = 2020,
   geometry = TRUE
 )
 
+# matching crs & interpolating: 
 tract_geo <- tract_geo %>%
   st_transform(., crs = "ESRI:102296") %>%
   select(GEOID, estimate)
@@ -35,15 +45,15 @@ tract_geo <- tract_geo %>%
    st_transform(., crs = "ESRI:102296") %>%  
    filter(!st_is_empty(.))%>%
    select(pwsid, geometry)
-
-interpolate <- areal::aw_interpolate(census_sf, tid="pwsid", 
-                              source=tract_geo, 
-                              sid="GEOID", 
-                              weight = "sum",
-                              output="sf", 
-                              extensive="estimate")
-
-# all estimates - a comparison: 
+ 
+ interpolate <- areal::aw_interpolate(census_sf, tid="pwsid", 
+                                      source=tract_geo, 
+                                      sid="GEOID", 
+                                      weight = "sum",
+                                      output="sf", 
+                                      extensive="estimate")
+ 
+# comparing all estimates so far: 
 pop_comp <- census %>%
   as.data.frame() %>%
   select(pwsid, population_served_count, estimate_total_pop) %>%
@@ -62,86 +72,93 @@ ggplot(pop_comp_long, aes(x = SDWIS, y = value, color = name)) +
   ylim(0,500000) + 
   theme_minimal()
 
-# raw numbers: 
+# total population counts: 
 crosswalk <- census$estimate_total_pop
 sdwis <- census$population_served_count
-sum(crosswalk, na.rm = T) # 44,291,253
+sum(crosswalk, na.rm = T) # 44,393,796
 sum(sdwis, na.rm = T) # 29,080,650
-sum(interpolate$estimate, na.rm = T) # 28,855,410
+sum(interpolate$estimate, na.rm = T) # 28,628,190
 
-# Texas population: 28,862,581
+# Texas population: 28,635,442
 tidycensus::get_acs(
   geography = "state", 
   variables = "B01003_001", 
   state = c("TX"),
-  year = 2021,
+  year = 2020,
   geometry = TRUE
 )
 
-###########################
-# focusing more on East TX: 
-###########################
+## summary so far: areal interpolation is closer to census population. SDWIS 
+# is still larger than the census population by ~500,000. The crosswalk 
+# population is nearly double that of the census population and appears to 
+# consistently overestimate across the board. 
+
+################################################################################ 
+# East TX - population comparisons 
+###############################################################################
 east_tx_cws <- census %>%
   filter(east_tx_flag == "yes")
-sum(east_tx_cws$estimate_total_pop, na.rm = T) # crosswalk: 4,332,072
+sum(east_tx_cws$estimate_total_pop, na.rm = T) # crosswalk: 4,433,395
 sum(east_tx_cws$population_served_count, na.rm = T) # sdwis: 2,249,752
 
-# grabbing East TX stats: 
+# grabbing East TX census stats: 
 etx_census <- tidycensus::get_acs(
   geography = "county", 
   variables = "B01003_001", 
   state = c("TX"), 
-  year = 2021,
+  year = 2020, 
   geometry = TRUE
 )
-
+# filtering census data for the right counties: 
 counties <- unlist(strsplit(etx_census$NAME, split = ","))
 etx_census$counties <- trimws(counties[grepl("County", counties)])
 
 east_tx <- read.csv("./data/raw/east_TX_counties.csv") %>%
   select(-X) %>%
   mutate(county_tidy = paste0(county_name, " County"))
-# running an intersection with east TX geography
+
 east_tx_geo <- etx_census %>%
   filter(counties %in% east_tx$county_tidy) 
 
-sum(east_tx_geo$estimate) # 1,916,924
+sum(east_tx_geo$estimate) # 1,928,057
 
-# what about areal interp?
+# testing areal interpolation: 
 east_pwsid <- keys$analysis_keys 
 east_pwsid <- east_pwsid %>%
   filter(east_tx_flag == "yes")
 
 east_interp <- interpolate %>%
   filter(pwsid %in% east_pwsid$pwsid)
-sum(east_interp$estimate)  # interpolating: 2,022,340
+sum(east_interp$estimate)  # interpolating: 2,029,203
 
-# graph for viz: 
+# visualizing differences in SDWIS and crosswalk estimates: 
 tx_test <- pop_comp %>%
-  mutate(sdwis_crosswalk_per_off = ((SDWIS - crosswalk)/SDWIS)*100, 
+  mutate(sdwis_crosswalk_percent_off = abs((SDWIS - crosswalk)/SDWIS)*100, 
          sdiws_div_croswalk = SDWIS/crosswalk)
 
-ggplot(tx_test, aes(x = SDWIS, y = sdiws_div_croswalk)) + 
+ggplot(tx_test, aes(x = SDWIS, y = sdwis_crosswalk_percent_off)) + 
   geom_point()
+# seems like largest % off is at really small systems
 
 # TX-wide summary: 
 # internet pop: 29,530,000
-# census pop: 28,862,581
-# crosswalk pop: 44,291,253
+# census pop: 28,635,442
+# crosswalk pop: 44,393,796
 # SDWIS pop: 29,080,650
-# areal pop: 28,855,410
-#
+# areal pop: 28,628,190
+
 # East TX: 
 # internet pop: 1,918,718 (https://www.east-texas.com/east-texas-maps.htm - where we got our east TX counties)
-# census pop: 1,916,924
-# crosswalk pop: 4,332,072
+# census pop:  1,928,057
+# crosswalk pop: 4,433,395
 # SDWIS pop: 2,249,752
-# areal pop: 2,022,340
+# areal pop: 2,029,203
 
 
-######################
-# checkin out that well data from EPA ORD 
-######################
+################################################################################ 
+# Investigating well data from EPA - ORD
+################################################################################ 
+# downloaded using the webmap viewer on 3/20/2024
 wells <- aws.s3::s3read_using(read.csv, 
                      object = "s3://tech-team-data/state-drinking-water/TX/raw/TX_bg_wellpop_EPAORD.csv") %>%
   janitor::clean_names()
@@ -153,17 +170,20 @@ well_pop <- wells %>%
   mutate(population_not_wells = x2020_population - population_served_by_wells_2020, 
          percent_cws = (population_not_wells/x2020_population)*100)
 
-# grabbing census geographies to plot this - using decennial census because 
+# grabbing census geographies to map this - using decennial census because 
 # that's what EPA's well data is based off of: 
-vars <- load_variables(2020, "pl")
-bg_census <- get_decennial(
+# vars <- load_variables(2020, "pl")
+bg_census <- tidycensus::get_decennial(
   geography = "block group",
   variables = "P1_001N",
   state = "TX",
   year = 2020, 
   geometry = TRUE
 )
+sum(bg_census$value) 
+# 29,145,505 - population reported from 2020 Decennial census 
 
+# mapping:
 well_census <- merge(well_pop, bg_census, by.x = "geoid", by.y = "GEOID", 
                      all.x = TRUE) %>%
   st_as_sf()
@@ -171,13 +191,10 @@ well_census <- merge(well_pop, bg_census, by.x = "geoid", by.y = "GEOID",
 well_pal <- colorNumeric(
   palette = viridis::mako(9),
   domain = well_census$percent_cws)
-
 leaflet() %>%
   addProviderTiles(providers$CartoDB.VoyagerNoLabels, group = "Toner Lite") %>%
   addPolygons(data = well_census,
               opacity = 0.9,
-              # stroke = TRUE,
-              # color = "black",
               color = ~well_pal(percent_cws),
               weight = 1,
               label = paste0("% CWS: ", round(well_census$percent_cws, 2))) %>%
@@ -187,28 +204,34 @@ leaflet() %>%
             title = "% CWS",
             opacity = 1)
 
-sum(well_census$x2020_population)
+## grabbing some summary stats here: 
+sum(well_census$x2020_population) # 7,401,970
+sum(well_census$population_served_by_wells_2020) # 2,493,742
+sum(well_census$population_not_wells) # 4,908,228
+
 # population in TX (which excludes major cities, which are likely on CWS: 7,401,970)
 # population on wells (which excludes major cities): 2,493,742
 
-# so population on CWS (assuming population of 29,530,000): 27,036,258, or 
-# 91.56% of the population in TX
+# so TX population on CWS (assuming population of 29,530,000): 
+# 29530000-2493742 = 27036258
+# 27,036,258, or 91.56% of the population in TX
 
-# % population on wells (assuming population of 29,530,000): 8.11%
+# % population on wells (assuming population of 29,530,000): 
+# 100 - 91.56 = 8.44% 
 
+################################################################################ 
+# Investigating overlapping SABs that might result in overestimating: 
+################################################################################ 
+# running an intersection on sabs: 
+sab_intersections <- st_intersection(demo$census, model = "closed")
 
-###############
-# investigating overlapping sabs: 
-##############
-# hmm - what if we remove intersecting polygons: 
-test <- st_intersection(demo$census, model = "closed")
-
-test_summary <- test %>%
+intersection_summary <- sab_intersections %>%
   select(pwsid, n.overlaps) %>%
   as.data.frame() %>%
   select(-geometry)
 
-intersections <- merge(census, test_summary, by = "pwsid", all.y = T)
+intersections <- merge(census, intersection_summary, by = "pwsid", 
+                       all.y = T)
 
 # finding total number of overlaps: 
 intersections_mini <- intersections %>%
@@ -232,17 +255,18 @@ leaflet() %>%
             values = intersections_mini$n.overlaps.total,
             title = "num overlaps",
             opacity = 1)
+
 # so really the polygon that gets flagged as the most intersections 
 # are just the ones that surround cities, where you have a bunch of close sabs. 
 # unfortunately the ones that I want to remove (i.e., utilities in Houston 
 # that are circles and overlap almost completely with the utility that serves 
 # the city), only have an overlap = 1, where houston has overlap = 261. 
-# ideally, I'd want to keep houston but remove the smaller circles 
+# ideally, I'd want to keep houston but remove the smaller circles.  
 
-# slicing data based on number of intersections: 
+# Looking at the distribution of overlaps: 
 ggplot(intersections_mini, aes(x = n.overlaps.total)) + 
   geom_histogram()
-
+ # testing out various cutoffs 
 intersection_cap <- intersections_mini %>%
   filter(n.overlaps.total < 60)
 demo$census %>%
@@ -257,11 +281,16 @@ demo$census %>%
 # just grabbing tier 1 and primacy agency code == "TX": 44,055,111
 # if you just grab sabs where number of intersections is < 60: 37,670,246
 
-
+# testing out some other sf functions: 
 crop <- st_crop(demo$census, demo$census)
+sym_diff <- st_sym_difference(demo$census, demo$census)
+
 leaflet() %>%
   addProviderTiles(providers$CartoDB.VoyagerNoLabels, group = "Toner Lite") %>%
-  addPolygons(data = crop,
+  addPolygons(data = sym_diff,
               opacity = 0.7,
               color = "red",
               weight = 1)
+
+
+
