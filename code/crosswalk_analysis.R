@@ -16,6 +16,9 @@ demo <- aws.s3::s3read_using(readRDS,
                              object = "s3://tech-team-data/state-drinking-water/TX/clean/TX_demographic_list.RData")
 keys <- aws.s3::s3read_using(readRDS, 
                              object = "s3://tech-team-data/state-drinking-water/TX/clean/TX_merging_keys_list.RData")
+bg_crosswalk <- aws.s3::s3read_using(read.csv, 
+                                     object = "s3://tech-team-data/pws_crosswalk/pws_census_blockgroup_weighted_crosswalk.csv") %>%
+                                     select(-X)
 ###############################################################################
 # TX population methods: 
 ###############################################################################
@@ -93,6 +96,85 @@ tidycensus::get_acs(
 # population is nearly double that of the census population and appears to 
 # consistently overestimate across the board. 
 
+## what does this look like spatially? 
+pop_comp_sf <- census %>%
+  as.data.frame() %>%
+  select(pwsid, population_served_count, estimate_total_pop) %>%
+  left_join(interpolate) %>%
+  rename(sdwis = population_served_count, 
+         crosswalk = estimate_total_pop, 
+         areal_interp = estimate) %>%
+  mutate(sdwis_crosswalk_percent_diff = ((sdwis - crosswalk)/((sdwis + crosswalk)/2))*100, 
+         sdwis_interp_percent_diff = ((sdwis - areal_interp)/((sdwis + areal_interp)/2))*100) %>%
+  st_as_sf(.) %>%
+  st_transform(., crs = st_crs(census))
+
+# plotting these as point graphs: 
+ggplot(pop_comp_sf, aes(x = sdwis_crosswalk_percent_diff, y = sdwis)) + 
+  geom_point() +
+  geom_point(aes(x = sdwis_interp_percent_diff), color = "red") + 
+  theme_minimal() + 
+  labs(x = "% Difference", y = "SDWIS pop") 
+# sdwis and crosswalk values are much closer for SDIWS populations ~250,00
+# smaller utilities have higher % difference and crosswalk seems to consistently
+# overestimate
+# same trend is found with areal interpolation but the % diff is smaller. 
+
+ggplot(pop_comp_sf, aes(x = sdwis_crosswalk_percent_diff, 
+                        y = sdwis_interp_percent_diff, 
+                        color = sdwis)) + 
+  geom_point() +
+  theme_minimal() + 
+  labs(x = "% Diff Crosswalk", y = "% Diff Interpolation") + 
+  geom_abline(intercept = 0, slope = 1, lty = "dashed",
+              size = 1, color = "red") + 
+  geom_hline(yintercept = 0, color = "darkred") + 
+  geom_vline(xintercept = 0, color = "darkred")
+# this plot just confirms that areal interpolation has smaller % difference 
+# than crosswalk. 
+
+# can I bin these into different population categories? 
+options(scipen = 999)
+pop_comp_sf$pop_bin <- cut(pop_comp_sf$sdwis, breaks = c(0, 20, 50, 100, 250, 
+                                                         400, 
+                                                         500, 750, 
+                                                         1000, 1500, 2500, 5000, 
+                                                         10000, 30000, 
+                                                         50000, 2205000))
+ggplot(pop_comp_sf, aes(x = sdwis_crosswalk_percent_diff, 
+                        y = sdwis_interp_percent_diff)) + 
+  geom_point() +
+  theme_minimal() + 
+  labs(x = "% Diff Crosswalk", y = "% Diff Interpolation") + 
+  geom_abline(intercept = 0, slope = 1, lty = "dashed",
+              size = 1, color = "red") + 
+  geom_hline(yintercept = 0, color = "darkred") + 
+  geom_vline(xintercept = 0, color = "darkred") + 
+  facet_wrap(~pop_bin)
+# interesting! definitely appears to be a clear trend where as SDWIS population
+# increases, the % diff for each method converges to 0%. 
+
+
+# mapping: 
+diff_pal <- colorNumeric(
+  palette = RColorBrewer::brewer.pal(11, "BrBG"),
+  domain = pop_comp_sf$sdwis_interp_percent_diff)
+leaflet() %>%
+  addProviderTiles(providers$CartoDB.VoyagerNoLabels, group = "Toner Lite") %>%
+  addPolygons(data = pop_comp_sf,
+              opacity = 0.9,
+              color = ~diff_pal(sdwis_interp_percent_diff),
+              weight = 1,
+              label = paste0("% diff: ", round(pop_comp_sf$sdwis_interp_percent_diff, 2))) %>%
+  addLegend("bottomright",
+            pal = diff_pal,
+            values = pop_comp_sf$sdwis_interp_percent_diff,
+            title = "% difference",
+            opacity = 1)
+# negative = crosswalk > SDIWS; 
+# positive = sdwis > crosswalk 
+
+
 ################################################################################ 
 # East TX - population comparisons 
 ###############################################################################
@@ -130,15 +212,6 @@ east_pwsid <- east_pwsid %>%
 east_interp <- interpolate %>%
   filter(pwsid %in% east_pwsid$pwsid)
 sum(east_interp$estimate)  # interpolating: 2,029,203
-
-# visualizing differences in SDWIS and crosswalk estimates: 
-tx_test <- pop_comp %>%
-  mutate(sdwis_crosswalk_percent_off = abs((SDWIS - crosswalk)/SDWIS)*100, 
-         sdiws_div_croswalk = SDWIS/crosswalk)
-
-ggplot(tx_test, aes(x = SDWIS, y = sdwis_crosswalk_percent_off)) + 
-  geom_point()
-# seems like largest % off is at really small systems
 
 # TX-wide summary: 
 # internet pop: 29,530,000
@@ -219,6 +292,38 @@ sum(well_census$population_not_wells) # 4,908,228
 # % population on wells (assuming population of 29,530,000): 
 # 100 - 91.56 = 8.44% 
 
+
+## what if we downweight values using this dataset?
+# Correct_Population = Population_From_XWalk * (Population_From_XWalk - Population_Well)
+# crosswalking well pops: 
+well_crosswalk <- merge(well_census, bg_crosswalk, by.x = "geoid", 
+                        by.y = "bg_geoid", all.x = TRUE) 
+well_crosswalk <- well_crosswalk %>%
+  mutate(well_crossed = population_served_by_wells_2020*bg_parcel_weight, 
+         pop_crossed = x2020_population*bg_parcel_weight, 
+         cws_crossed = population_not_wells*bg_parcel_weight)
+
+well_pop_summary <- well_crosswalk  %>%
+  group_by(pwsid) %>%
+  summarize(pwsid_wells = sum(well_crossed), 
+            pwsid_pop = sum(pop_crossed), 
+            pwsid_cws = sum(cws_crossed)) %>%
+  relocate(pwsid_pop, .before = pwsid_wells) %>%
+  as.data.frame() %>%
+  select(-geometry)
+
+pop_comp_all <- merge(pop_comp_sf, well_pop_summary, by = "pwsid") %>%
+  relocate(pwsid_cws, .after = areal_interp) %>%
+  # trying out the equation that Gabe proposed: 
+  mutate(calculate_pop = crosswalk*(crosswalk - pwsid_wells))
+
+# plotting: 
+ggplot(pop_comp_all, aes(x = sdwis, y = crosswalk)) + 
+  geom_point() + 
+  geom_point(aes(y = areal_interp), color = "red") + 
+  geom_point(aes(y = pwsid_cws), color = "darkred")
+# seems way off
+
 ################################################################################ 
 # Investigating overlapping SABs that might result in overestimating: 
 ################################################################################ 
@@ -280,6 +385,7 @@ demo$census %>%
 # just grabbing tier 1: 44,096,938
 # just grabbing tier 1 and primacy agency code == "TX": 44,055,111
 # if you just grab sabs where number of intersections is < 60: 37,670,246
+
 
 # testing out some other sf functions: 
 crop <- st_crop(demo$census, demo$census)
