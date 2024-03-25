@@ -467,10 +467,33 @@ ggplot(viols_density, aes(x = pop_density,
 
 ## What kind of violations has the system reported? 
 ```{r}
-cont_codes <- aws.s3::s3read_using(read.csv, 
+# SDWIS violations: 
+viols <- wds$sdwis
+# codes from SDWIS: 
+sdwis_codes <- aws.s3::s3read_using(read.csv, 
                             object = "s3://tech-team-data/state-drinking-water/TX/raw/SDWA_REF_CODE_VALUES.csv") %>%
   janitor::clean_names()
+# grabbing just violation codes:
+violation_codes <- sdwis_codes %>%
+  filter(value_type == "VIOLATION_CODE")
 
+viol_type <- merge(viols, violation_codes, by.x = "violation_code", 
+                   by.y = "value_code")
+
+# quick summary of how common each are: 
+viol_type_summary <- viol_type %>%
+  group_by(value_description) %>%
+  count()
+
+ggplot(viol_type_summary, aes(x = value_description, y = n)) + 
+  geom_bar(stat = "identity") + 
+  coord_flip() + 
+  theme_minimal()
+
+# really most of them are monitoring violations (48,812), 
+# followed by public notification violation for NPDWR (26,152), 
+# followed by MCL (18,062)
+# and monitoring and reporting: (14,679)
 ```
 
 ## Has the system been on a water shortage notice? 
@@ -531,7 +554,31 @@ analysis_keys %>%
 ```{r}
 ejscreen <- demo$ejscreen %>%
   select(-X)
-names(ejscreen)
+
+# Superfund sites (NPL), risk management plan (RMP) proximity, 
+# haz waste (TSDF and LQGs) proximity, underground storage tanks (UST), 
+# and waste water discharges indicator 
+# TODO: decide if we want percentile?
+water_haz <- ejscreen %>%
+  select(oid, id, pnpl, prmp, ptsdf, ust, pwdis) %>%
+  rename(superfund = pnpl, 
+         rmp = prmp, 
+         haz_waste = ptsdf, 
+         storage_tanks = ust, 
+         waste_discharge = pwdis)
+
+# note data are at the block group level: 
+bg_crosswalk <- aws.s3::s3read_using(read.csv, 
+                                     object = "s3://tech-team-data/pws_crosswalk/pws_census_blockgroup_weighted_crosswalk.csv") %>%
+                                     select(-X)
+
+# crosswalking: 
+# TODO: EJscreen FIPS code is not 12 numbers...why? it's definitely at the 
+# block group level based on the documentation 
+# ej_haz_crosswalked <- merge(water_haz, bg_crosswalk, 
+#                             by.x = "id", by.y = "bg_geoid")
+
+
 ```
 
 ## How many boil water notices have there been over the past five years?

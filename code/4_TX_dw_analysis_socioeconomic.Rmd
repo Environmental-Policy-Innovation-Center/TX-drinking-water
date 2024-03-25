@@ -1458,7 +1458,7 @@ cejst <- demo$cejst
 pwsids <- demo$census$pwsid
 census <- demo$census
 
-# will need to be ~croswalked~
+# will need to be ~crosswalked~
 tract_crosswalk <- aws.s3::s3read_using(read.csv, 
                                          object = "s3://tech-team-data/pws_crosswalk/pws_census_tract_weighted_crosswalk.csv") %>%
   select(-X) %>%
@@ -1678,4 +1678,18 @@ etx_wide <- etx_wide %>%
 
 summary(etx_wide)
 sum(etx_wide$estimate_total_pop)
+
+
+# correlation plot across all metrics: 
+all_data <- census %>%
+  as.data.frame() %>%
+  # select(-geography) %>%
+  left_join(keys$analysis_keys)
+
+all_cor = cor(all_data %>% select(c(healthbased_violations_5yr,paperwork_violations_5yr, 
+                              paperwork_violations_10yr, healthbased_violations_10yr,
+                              area_miles, pop_density, estimate_mhi, 
+                              estimate_white_alone_per:estimate_poc_alone_per)), 
+        use="pairwise.complete.obs")
+corrplot(all_cor, method = 'number') 
 ```
