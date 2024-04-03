@@ -1,0 +1,904 @@
+---
+title: "TX Drinking Water Data Analysis - Crosswalk"
+author: "EmmaLi Tsai"
+date: "2024-04-01"
+last_updated: "2024-04-03"
+output: html_document
+---
+
+## Loading Packages & Data
+```{r}
+# loading packages: 
+library(aws.s3)
+library(tidyverse)
+library(leaflet)
+library(sf)
+library(areal)
+library(tidycensus)
+library(corrplot)
+
+# loading lists of data 
+demo <- aws.s3::s3read_using(readRDS, 
+                             object = "s3://tech-team-data/state-drinking-water/TX/clean/TX_demographic_list.RData")
+keys <- aws.s3::s3read_using(readRDS, 
+                             object = "s3://tech-team-data/state-drinking-water/TX/clean/TX_merging_keys_list.RData")
+bg_crosswalk <- aws.s3::s3read_using(read.csv, 
+                                     object = "s3://tech-team-data/pws_crosswalk/pws_census_blockgroup_weighted_crosswalk.csv") %>%
+                                     select(-X)
+```
+
+## TX-wide comparisons: 
+```{r}
+################################################################################
+# quick map to see where we're at: 
+################################################################################
+leaflet() %>%
+  addProviderTiles(providers$CartoDB.VoyagerNoLabels, group = "Toner Lite") %>%
+  addPolygons(data = demo$census,
+              opacity = 0.9,
+              color = "gray",
+              weight = 1,
+              label = paste0("pwsid: ", 
+                             demo$census$pwsid))
+
+################################################################################
+# Comparing all methods: 
+################################################################################
+# figuring out differences in population estimates: 
+census <- demo$census %>% 
+  # filtering all pwsids where the crosswalk was incomplete - so we have fully
+  # comparable pwsids: 
+  filter(!is.na(estimate_total_pop))
+# removing ones that cross borders with Arkansas: 
+census <- census[str_detect(census$pwsid, "TX"),] 
+crosswalk <- census$estimate_total_pop
+sdwis <- census$population_served_count
+
+# census tracts for areal interpolation: 
+tract_geo <- tidycensus::get_acs(
+  geography = "tract", 
+  variables = "B01003_001", 
+  state = c("TX"),
+  year = 2020,
+  geometry = TRUE
+)
+
+# matching crs & interpolating: 
+tract_geo <- tract_geo %>%
+  st_transform(., crs = "ESRI:102296") %>%
+  select(GEOID, estimate)
+
+census_sf <- census %>%
+  st_transform(., crs = "ESRI:102296") %>%  
+  filter(!st_is_empty(.))%>%
+  select(pwsid, geometry)
+
+interpolate <- areal::aw_interpolate(census_sf, tid="pwsid", 
+                                     source=tract_geo, 
+                                     sid="GEOID", 
+                                     # weight = "sum",
+                                     weight = "total",
+                                     output="sf", 
+                                     extensive="estimate")
+
+# comparing all estimates so far: 
+pop_comp <- census %>%
+  as.data.frame() %>%
+  select(pwsid, population_served_count, estimate_total_pop) %>%
+  left_join(interpolate) %>%
+  as.data.frame() %>%
+  select(-geometry) %>%
+  rename(SDWIS = population_served_count, 
+         crosswalk = estimate_total_pop, 
+         areal_interp = estimate)
+
+# pivoting to long to make plotting multiple estimates easier: 
+pop_comp_long <- pivot_longer(pop_comp, crosswalk:areal_interp)
+ggplot(pop_comp_long, aes(x = SDWIS, y = value, color = name)) + 
+  geom_point(alpha = 0.5) + 
+  geom_line(aes(x = SDWIS, y = SDWIS), color = "black", lty = "dashed") +
+  xlim(0,500000) + 
+  ylim(0,500000) + 
+  theme_minimal()
+
+################################################################################
+# Plots & maps for comparison: 
+################################################################################
+pop_comp_sf <- census %>%
+  as.data.frame() %>%
+  select(pwsid, population_served_count, estimate_total_pop) %>%
+  left_join(interpolate) %>%
+  rename(sdwis = population_served_count, 
+         crosswalk = estimate_total_pop, 
+         areal_interp = estimate) %>%
+  mutate(sdwis_crosswalk_diff = abs(sdwis - crosswalk), 
+         sdwis_areal_diff = abs(sdwis - areal_interp), 
+         sdwis_crosswalk_percent_diff = ((sdwis - crosswalk)/((sdwis + crosswalk)/2))*100, 
+         sdwis_interp_percent_diff = ((sdwis - areal_interp)/((sdwis + areal_interp)/2))*100, 
+         # what if we took the mean of the two methods?
+         test_mean = (sdwis + areal_interp)/2, 
+         test_percent_diff  = ((sdwis - test_mean)/((sdwis + test_mean)/2))*100) %>%
+  st_as_sf(.) %>%
+  st_transform(., crs = st_crs(census))
+
+# plotting these as point graphs: 
+ggplot(pop_comp_sf, aes(x = sdwis_crosswalk_diff, y = sdwis)) + 
+  geom_point(alpha = 0.5) +
+  geom_point(aes(x = sdwis_areal_diff), color = "red", alpha = 0.5) + 
+  theme_minimal() + 
+  labs(x = "abs(sdwis - estimate)", y = "SDWIS pop") 
+
+ggplot(pop_comp_sf, aes(x = sdwis_crosswalk_percent_diff, y = sdwis)) + 
+  geom_point(alpha = 0.5) +
+  geom_point(aes(x = sdwis_interp_percent_diff), color = "red", alpha = 0.5) + 
+  geom_point(aes(x = test_percent_diff), color = "blue", alpha = 0.5) + 
+  theme_minimal() + 
+  labs(x = "% Difference", y = "SDWIS pop") 
+# % difference for the crosswalk is generally negative, indicating that the 
+# crosswalk consistently overestimates populations (which we know)
+# areal interpolation and SDWIS are close (i.e., % difference is 0) at high
+# SDWIS populations. 
+
+#  plotting percent difference: 
+ggplot(pop_comp_sf, aes(x = sdwis_crosswalk_percent_diff, 
+                        y = sdwis_interp_percent_diff, 
+                        color = sdwis)) + 
+  geom_point() +
+  theme_minimal() + 
+  labs(x = "% Diff Crosswalk", y = "% Diff Interpolation") + 
+  geom_abline(intercept = 0, slope = 1, lty = "dashed",
+              size = 1, color = "red") + 
+  geom_hline(yintercept = 0, color = "darkred") + 
+  geom_vline(xintercept = 0, color = "darkred")
+# this plot just confirms that areal interpolation has smaller % difference 
+# than crosswalk. 
+
+# ggplot(pop_comp_sf, aes(x = sdwis_crosswalk_diff, 
+#                         y = sdwis_areal_diff, 
+#                         color = sdwis)) + 
+#   geom_point() +
+#   theme_minimal() + 
+#   labs(x = "% Diff Crosswalk", y = "% Diff Interpolation") + 
+#   geom_abline(intercept = 0, slope = 1, lty = "dashed",
+#               size = 1, color = "red") + 
+#   geom_hline(yintercept = 0, color = "darkred") + 
+#   geom_vline(xintercept = 0, color = "darkred")
+
+
+# can I bin these into different population categories? 
+pop_comp_sf$pop_bin <- cut(pop_comp_sf$sdwis, breaks = c(0, 20, 50, 100, 
+                                                         250, 400, 
+                                                         500, 750, 
+                                                         1000, 1500, 2500, 5000, 
+                                                         10000, 30000, 
+                                                         50000, 2205000))
+ggplot(pop_comp_sf, aes(x = sdwis_crosswalk_percent_diff, 
+                        y = sdwis_interp_percent_diff)) + 
+  geom_point() +
+  theme_minimal() + 
+  labs(x = "% Diff Crosswalk", y = "% Diff Interpolation") + 
+  geom_abline(intercept = 0, slope = 1, lty = "dashed",
+              size = 1, color = "red") + 
+  geom_hline(yintercept = 0, color = "darkred") + 
+  geom_vline(xintercept = 0, color = "darkred") + 
+  facet_wrap(~pop_bin)+ 
+  ggtitle("Comparison of Methods by Population")
+# interesting! definitely appears to be a clear trend where as SDWIS population
+# increases, the % diff for each method converges to 0%, BUT this might just be
+# because when you calculate % difference you're taking the mean of SDWIS and 
+# the population estimate, which means you're just dividing by a larger number 
+# for larger populations...
+
+
+# what about by area? 
+pop_comp_area <- census %>%
+  select(pwsid, area_miles) %>%
+  as.data.frame() %>%
+  select(-geometry)
+pop_comp_area <- merge(pop_comp_sf, pop_comp_area, by = "pwsid")
+pop_comp_area$area_bin <- cut(pop_comp_area$area_miles, breaks = c(0, 0.01, 
+                                                                   0.02, 0.05,  0.1, 0.25, 
+                                                                   0.5, 1, 
+                                                                   2, 3, 5, 10, 
+                                                                   15, 20, 50, 80, 150))
+ggplot(pop_comp_area, aes(x = sdwis_crosswalk_percent_diff, 
+                        y = sdwis_interp_percent_diff)) + 
+  geom_point() +
+  theme_minimal() + 
+  labs(x = "% Diff Crosswalk", y = "% Diff Interpolation") + 
+  geom_abline(intercept = 0, slope = 1, lty = "dashed",
+              size = 1, color = "red") + 
+  geom_hline(yintercept = 0, color = "darkred") + 
+  geom_vline(xintercept = 0, color = "darkred") + 
+  facet_wrap(~area_bin)+ 
+  ggtitle("Comparison of Methods by Utility Area")
+# generally same trend as population - larger the area = more similar the
+# population estimate is to SDWIS
+
+
+# what about population density? 
+pop_comp_den <- census %>%
+  select(pwsid, pop_density) %>%
+  as.data.frame() %>%
+  select(-geometry)
+pop_comp_den <- merge(pop_comp_sf, pop_comp_den, by = "pwsid")
+pop_comp_den$pop_den_bin <- cut(pop_comp_den$pop_density, breaks = c(0, 100, 
+                                                                     500, 1000, 
+                                                                     5000,
+                                                                     10000, 
+                                                                     25000,
+                                                                     50000, 
+                                                                     75000, 
+                                                                     100000, 
+                                                                     1000000))
+ggplot(pop_comp_den, aes(x = sdwis_crosswalk_percent_diff, 
+                          y = sdwis_interp_percent_diff)) + 
+  geom_point() +
+  theme_minimal() + 
+  labs(x = "% Diff Crosswalk", y = "% Diff Interpolation") + 
+  geom_abline(intercept = 0, slope = 1, lty = "dashed",
+              size = 1, color = "red") + 
+  geom_hline(yintercept = 0, color = "darkred") + 
+  geom_vline(xintercept = 0, color = "darkred") + 
+  facet_wrap(~pop_den_bin) + 
+  ggtitle("Comparison of Methods by Population Density")
+# okay trends with population density are odd - appears that pop density might 
+# have a strong impact on areal interpolation 
+
+
+# mapping: 
+diff_pal <- colorNumeric(
+  palette = RColorBrewer::brewer.pal(11, "BrBG"),
+  domain = pop_comp_sf$sdwis_interp_percent_diff)
+leaflet() %>%
+  addProviderTiles(providers$CartoDB.VoyagerNoLabels, group = "Toner Lite") %>%
+  addPolygons(data = pop_comp_sf,
+              opacity = 0.9,
+              color = ~diff_pal(sdwis_interp_percent_diff),
+              weight = 1,
+              label = paste0("% diff: ", 
+                             round(pop_comp_sf$sdwis_interp_percent_diff, 2))) %>%
+  addLegend("bottomright",
+            pal = diff_pal,
+            values = pop_comp_sf$sdwis_interp_percent_diff,
+            title = "% difference",
+            opacity = 1)
+# negative = method > SDIWS; 
+# positive = SDWIS > method 
+
+# correlations: 
+interesting_vars <- census %>%
+  select(pwsid, service_connections_count, area_miles, pop_density) %>%
+  as.data.frame() %>%
+  select(-geometry)
+vars_comp <- pop_comp_sf %>%
+  left_join(interesting_vars) %>%
+  as.data.frame() %>%
+  select(-geometry) %>%
+  mutate(abs_sdwis_crosswalk_percent_diff = abs(sdwis_crosswalk_percent_diff), 
+         abs_sdwis_interp_percent_diff = abs(sdwis_interp_percent_diff))
+
+all_cor <- cor(vars_comp %>% 
+                 select(c(sdwis, crosswalk, areal_interp, 
+                          service_connections_count, area_miles, pop_density, 
+                          abs_sdwis_crosswalk_percent_diff, 
+                          abs_sdwis_interp_percent_diff)), 
+               use = "pairwise.complete.obs")
+
+cor_pvals <- cor.mtest(all_cor, conf.level = 0.95)
+cor_pvals$p
+
+corrplot(all_cor, method = 'ellipse', type = 'upper', 
+         p.mat = cor_pvals$p, insig = "p-value", sig.level = -1)
+
+################################################################################
+# Comparing the total population estimates: 
+################################################################################
+sum(pop_comp_sf$sdwis, na.rm = T) 
+sum(pop_comp_sf$crosswalk, na.rm = T) 
+sum(pop_comp_sf$areal_interp, na.rm = T) 
+# 24,506,613 when using total weights (which makes more sense:)
+
+# mean values: 
+mean(abs(pop_comp_sf$sdwis_crosswalk_percent_diff), na.rm = T)
+mean(abs(pop_comp_sf$sdwis_interp_percent_diff), na.rm = T)
+median(abs(pop_comp_sf$sdwis_crosswalk_percent_diff), na.rm = T)
+median(abs(pop_comp_sf$sdwis_interp_percent_diff), na.rm = T)
+
+# plots to visualize distribution 
+ggplot(pop_comp_sf, aes(x = sdwis_crosswalk_percent_diff)) + 
+  geom_histogram() + 
+  geom_histogram(aes(x = sdwis_interp_percent_diff), 
+                 fill = "blue", alpha = 0.5) + 
+  theme_minimal() + 
+  labs(x = "% Difference from SDWIS")
+
+ggplot(pop_comp_sf, aes(x = sdwis_crosswalk_diff)) + 
+  geom_histogram() + 
+  geom_histogram(aes(x = sdwis_areal_diff), 
+                 fill = "blue", alpha = 0.5) + 
+  theme_minimal() + 
+  labs(x = "Absolute Difference from SDWIS")
+
+# Texas population: 28,635,442
+tidycensus::get_acs(
+  geography = "state", 
+  variables = "B01003_001", 
+  state = c("TX"),
+  year = 2020,
+  geometry = TRUE
+)
+
+
+# what about just straight difference?
+pop_comp_sf <- pop_comp_sf %>%
+  mutate(sdwis_interp_diff = abs(sdwis - areal_interp), 
+         sdwis_cross_diff = abs(sdwis - crosswalk))
+mean(pop_comp_sf$sdwis_interp_diff)
+mean(pop_comp_sf$sdwis_cross_diff)
+
+## summary so far: areal interpolation is closer to census population. SDWIS 
+# is still larger than the census population by ~500,000. The crosswalk 
+# population is nearly double that of the census population and appears to 
+# consistently overestimate across the board. 
+```
+
+## East TX comparisons: 
+```{r}
+# grabbing East TX census population: 
+etx_census <- tidycensus::get_acs(
+  geography = "county", 
+  variables = "B01003_001", 
+  state = c("TX"), 
+  year = 2020, 
+  geometry = TRUE
+)
+# filtering census data for the right counties: 
+counties <- unlist(strsplit(etx_census$NAME, split = ","))
+etx_census$counties <- trimws(counties[grepl("County", counties)])
+
+east_tx <- read.csv("./data/raw/east_TX_counties.csv") %>%
+  select(-X) %>%
+  mutate(county_tidy = paste0(county_name, " County"))
+
+east_tx_geo <- etx_census %>%
+  filter(counties %in% east_tx$county_tidy) 
+
+sum(east_tx_geo$estimate) # 1,928,057
+
+################################################################################
+# Comparing total population estimates: 
+################################################################################
+east_tx_pwsids <- demo$census %>%
+  filter(east_tx_flag == "yes")
+# mean values: 
+etx_comp_sf <- pop_comp_sf %>%
+  filter(pwsid %in% east_tx_pwsids$pwsid) 
+mean(etx_comp_sf$sdwis_crosswalk_percent_diff, na.rm = T)
+mean(etx_comp_sf$sdwis_interp_percent_diff, na.rm = T)
+
+sum(etx_comp_sf$sdwis)
+sum(etx_comp_sf$crosswalk)
+sum(etx_comp_sf$areal_interp)
+
+# what about just straight difference?
+etx_comp_sf <- etx_comp_sf %>%
+  mutate(sdwis_interp_diff = abs(sdwis - areal_interp), 
+         sdwis_cross_diff = abs(sdwis - crosswalk))
+mean(etx_comp_sf$sdwis_interp_diff)
+mean(etx_comp_sf$sdwis_cross_diff)
+
+# plots for viz: 
+ggplot(etx_comp_sf, aes(x = sdwis_crosswalk_percent_diff)) + 
+  geom_histogram() + 
+  geom_histogram(aes(x = sdwis_interp_percent_diff), 
+                 fill = "blue", alpha = 0.5) + 
+  theme_minimal() + 
+  labs(x = "% Difference from SDWIS")
+
+ggplot(etx_comp_sf, aes(x = sdwis_cross_diff)) + 
+  geom_histogram() + 
+  geom_histogram(aes(x = sdwis_interp_diff), 
+                 fill = "blue", alpha = 0.5) + 
+  theme_minimal() + 
+  labs(x = "Absolute Difference from SDWIS")
+```
+
+## Well data from EPA-ORD 
+```{r}
+# downloaded using the webmap viewer on 3/20/2024
+wells <- aws.s3::s3read_using(read.csv, 
+                     object = "s3://tech-team-data/state-drinking-water/TX/raw/TX_bg_wellpop_EPAORD.csv") %>%
+  janitor::clean_names()
+
+well_pop <- wells %>%
+  select(geoid, x2020_population, population_served_by_wells_2020) %>%
+  mutate(x2020_population = readr::parse_number(x2020_population), 
+         population_served_by_wells_2020 = readr::parse_number(population_served_by_wells_2020)) %>%
+  mutate(population_not_wells = x2020_population - population_served_by_wells_2020, 
+         percent_cws = (population_not_wells/x2020_population)*100)
+
+# grabbing census geographies to map this - using decennial census because 
+# that's what EPA's well data is based off of: 
+# vars <- load_variables(2020, "pl")
+bg_census <- tidycensus::get_decennial(
+  geography = "block group",
+  variables = "P1_001N",
+  state = "TX",
+  year = 2020, 
+  geometry = TRUE
+)
+sum(bg_census$value) 
+# 29,145,505 - population reported from 2020 Decennial census 
+
+# mapping:
+well_census <- merge(well_pop, bg_census, by.x = "geoid", by.y = "GEOID", 
+                     all.x = TRUE) %>%
+  st_as_sf()
+well_pal <- colorNumeric(
+  palette = viridis::mako(9),
+  domain = well_census$percent_cws)
+leaflet() %>%
+  addProviderTiles(providers$CartoDB.VoyagerNoLabels, group = "Toner Lite") %>%
+  addPolygons(data = well_census,
+              opacity = 0.9,
+              color = ~well_pal(percent_cws),
+              weight = 1,
+              label = paste0("% CWS: ", round(well_census$percent_cws, 2))) %>%
+  addLegend("bottomright",
+            pal = well_pal,
+            values = well_census$percent_cws,
+            title = "% CWS",
+            opacity = 1)
+
+## grabbing some summary stats here: 
+sum(well_census$x2020_population) # 7,401,970
+sum(well_census$population_served_by_wells_2020) # 2,493,742
+sum(well_census$population_not_wells) # 4,908,228
+
+# population in TX (which excludes major cities, which are likely on CWS: 7,401,970)
+# population on wells (which excludes major cities): 2,493,742
+
+# so TX population on CWS (assuming population of 29,530,000): 
+# 29530000-2493742 = 27036258
+# 27,036,258, or 91.56% of the population in TX
+
+# % population on wells (assuming population of 29,530,000): 
+# 100 - 91.56 = 8.44% 
+
+## What about East TX?
+# filtering census data for the right counties: 
+counties <- unlist(strsplit(well_census$NAME, split = ","))
+well_census$counties <- trimws(counties[grepl("County", counties)])
+
+east_tx <- read.csv("./data/raw/east_TX_counties.csv") %>%
+  select(-X) %>%
+  mutate(county_tidy = paste0(county_name, " County"))
+
+well_census_etx <- well_census %>%
+  filter(counties %in% east_tx$county_tidy) 
+
+sum(well_census_etx$population_served_by_wells_2020) # 420,974
+```
+
+## Jefferson Co - no overlapping SABs: 
+```{r}
+################################################################################ 
+# Small test case in Jefferson county, where SABs don't overlap 
+################################################################################ 
+jeff_co <- etx_census %>% filter(NAME == "Jefferson County, Texas")
+# population: 253,136
+jeff_sabs <- census %>% filter(county_served == "JEFFERSON")
+sum(jeff_sabs$population_served_count)
+# sdwis population: 236,970
+sum(jeff_sabs$estimate_total_pop)
+# crosswalk: 308,588.5
+
+# okay let's try areal interpolation first: 
+# grabbing tract geometries in Jefferson Co: 
+census_tract <- tidycensus::get_acs(
+  geography = "tract", 
+  variables = "B01003_001", 
+  state = c("TX"), 
+  year = 2020, 
+  geometry = TRUE
+)
+jeff_co_tracts <- census_tract[str_detect(census_tract$NAME, "Jefferson"),]
+
+# what does this look like: 
+pop_pal <- colorNumeric(
+  palette = viridis::mako(9),
+  domain = jeff_co_tracts$estimate)
+leaflet() %>%
+  addProviderTiles(providers$CartoDB.VoyagerNoLabels, group = "Toner Lite") %>%
+  addPolygons(data = jeff_sabs,
+              opacity = 0.7,
+              color = "black",
+              weight = 1.9,
+              label = paste0("pwsid:", jeff_sabs$pwsid)) %>%
+  addPolygons(data = jeff_co_tracts,
+              opacity = 0.7,
+              color = "grey", 
+              # color = ~pop_pal(estimate),
+              weight = 1,
+              label = jeff_co_tracts$estimate)
+
+
+# transforming before aw interpolate: 
+jeff_sabs <- jeff_sabs %>%
+  st_as_sf() %>%
+  st_transform(., crs = 26915)
+jeff_co_tracts <- jeff_co_tracts %>%
+  st_as_sf() %>%
+  st_transform(., crs = 26915)
+
+interpolate <- areal::aw_interpolate(jeff_sabs, 
+                                     tid="pwsid",
+                                     source=jeff_co_tracts, 
+                                     sid="GEOID", 
+                                     # weight = "sum",
+                                     weight = "total",
+                                     output="sf", 
+                                     extensive="estimate")
+
+# what did the interpolation estimate: 
+sum(interpolate$estimate)
+# extensive: 253,136 - which makes sense because every individual is 
+# added to a pwsid 
+# extensive with total weight: 227,000.1
+
+
+################################################################################ 
+# Plots and maps for comparison: 
+################################################################################ 
+method_comp <- interpolate %>%
+  select(pwsid, population_served_count, estimate_total_pop, estimate) %>%
+  rename(sdwis = population_served_count, 
+         crosswalk = estimate_total_pop, 
+         areal_interp = estimate)
+
+ggplot(method_comp, aes(x = sdwis, y = crosswalk)) + 
+  geom_point(color = "blue") + 
+  geom_line(color = "blue") + 
+  geom_point(aes(y = areal_interp), color = "darkred") + 
+  geom_line(aes(y = areal_interp), color = "darkred") + 
+  geom_line(aes(y = sdwis), color = "black") + 
+  geom_point(aes(y = sdwis), color = "black") + 
+  theme_minimal() + 
+  labs(x = "SDWIS", y = "Estimate")
+# wow areal interpolation is a lot closer
+
+# what about the % difference? 
+jco_comp_sf <- method_comp %>%
+  mutate(sdwis_crosswalk_percent_diff = ((sdwis - crosswalk)/((sdwis + crosswalk)/2))*100, 
+         sdwis_interp_percent_diff = ((sdwis - areal_interp)/((sdwis + areal_interp)/2))*100) %>%
+  st_as_sf(.) %>%
+  st_transform(., crs = st_crs(census))
+
+# plotting these as point graphs: 
+ggplot(jco_comp_sf, aes(x = sdwis_crosswalk_percent_diff, y = sdwis)) + 
+  geom_point(color = "blue") +
+  geom_point(aes(x = sdwis_interp_percent_diff), color = "red") + 
+  theme_minimal() + 
+  labs(x = "% Difference", y = "SDWIS pop") 
+
+# plotting percent difference: 
+ggplot(jco_comp_sf, aes(x = sdwis_crosswalk_percent_diff, 
+                        y = sdwis_interp_percent_diff, 
+                        color = sdwis)) + 
+  geom_point() +
+  theme_minimal() + 
+  labs(x = "% Diff Crosswalk", y = "% Diff Interpolation") + 
+  geom_abline(intercept = 0, slope = 1, lty = "dashed",
+              size = 1, color = "red") + 
+  geom_hline(yintercept = 0, color = "darkred") + 
+  geom_vline(xintercept = 0, color = "darkred")
+
+# mapping: 
+diff_pal <- colorBin(
+  palette = RColorBrewer::brewer.pal(11, "BrBG"),
+  bins = c(-200, -100, -50, 0, 50, 100, 200))
+leaflet() %>%
+  addProviderTiles(providers$CartoDB.VoyagerNoLabels, group = "Toner Lite") %>%
+  addPolygons(data = jco_comp_sf,
+              opacity = 0.9,
+              color = "grey",
+              weight = 1) %>%
+  addPolygons(data = jco_comp_sf,
+              opacity = 0.9,
+              color = ~diff_pal(sdwis_crosswalk_percent_diff),
+              weight = 1,
+              label = paste0("% diff: ", 
+                             round(jco_comp_sf$sdwis_crosswalk_percent_diff, 2))) %>%
+  addLegend("bottomright",
+            pal = diff_pal,
+            values = jco_comp_sf$sdwis_crosswalk_percent_diff,
+            title = "% difference",
+            opacity = 1)
+
+## investigating correlation between methods and other vars of interest: 
+vars_comp <- jco_comp_sf %>%
+  left_join(interesting_vars) %>%
+  as.data.frame() %>%
+  select(-geometry) %>%
+  mutate(abs_sdwis_crosswalk_percent_diff = abs(sdwis_crosswalk_percent_diff), 
+         abs_sdwis_interp_percent_diff = abs(sdwis_interp_percent_diff))
+
+all_cor <- cor(vars_comp %>% 
+                 select(c(sdwis, crosswalk, areal_interp, 
+                          service_connections_count, area_miles, pop_density, 
+                          abs_sdwis_crosswalk_percent_diff, 
+                          abs_sdwis_interp_percent_diff)), 
+               use = "pairwise.complete.obs")
+
+cor_pvals <- cor.mtest(all_cor, conf.level = 0.95)
+cor_pvals$p
+
+corrplot(all_cor, method = 'ellipse', type = 'upper', 
+         p.mat = cor_pvals$p, insig = "p-value", sig.level = -1)
+
+################################################################################ 
+# Comparing total population estimates: 
+################################################################################ 
+sum(jco_comp_sf$sdwis)
+sum(jco_comp_sf$crosswalk)
+sum(jco_comp_sf$areal_interp)
+
+# checking out how this compares to EPA's ORD:
+jeff_co_well <- well_census[str_detect(well_census$NAME, "Jefferson County"),]
+sum(jeff_co_well$population_served_by_wells_2020)
+# 10,894 people served by domestic wells in Jefferson County, 
+# so our target cws pop should be 242,242
+
+mean(jco_comp_sf$sdwis_crosswalk_percent_diff)
+median(jco_comp_sf$sdwis_crosswalk_percent_diff)
+mean(jco_comp_sf$sdwis_interp_percent_diff)
+median(jco_comp_sf$sdwis_interp_percent_diff)
+
+# what if we just took the mean of the two methods?
+method_comp$mean_cross_interp <- (method_comp$crosswalk + 
+                                    method_comp$areal_interp)/2
+
+# what about just straight difference?
+jco_comp_sf <- jco_comp_sf %>%
+  mutate(sdwis_interp_diff = abs(sdwis - areal_interp), 
+         sdwis_cross_diff = abs(sdwis - crosswalk))
+mean(jco_comp_sf$sdwis_interp_diff)
+mean(jco_comp_sf$sdwis_cross_diff)
+
+# what about wells: 
+jefferson_wells <- well_census[str_detect(well_census$NAME, "Jefferson"),]
+sum(jefferson_wells$population_served_by_wells_2020)
+
+# visualizing distributions: 
+ggplot(jco_comp_sf, aes(x = sdwis_crosswalk_percent_diff)) + 
+  geom_histogram() + 
+  geom_histogram(aes(x = sdwis_interp_percent_diff), 
+                 fill = "blue", alpha = 0.5) + 
+  theme_minimal() + 
+  labs(x = "% Difference from SDWIS")
+
+ggplot(jco_comp_sf, aes(x = sdwis_cross_diff)) + 
+  geom_histogram() + 
+  geom_histogram(aes(x = sdwis_interp_diff), 
+                 fill = "blue", alpha = 0.5) + 
+  theme_minimal() + 
+  labs(x = "Absolute Difference from SDWIS")
+```
+
+## Harris Co - overlapping SABs
+```{r}
+# grabbing tract geometries: 
+tract_geo <- tidycensus::get_acs(
+  geography = "tract", 
+  variables = "B01003_001", 
+  state = c("TX"),
+  year = 2020,
+  geometry = TRUE
+)
+# grabbing some other counties since the SABs bleed into these: 
+harris_co <- tract_geo[str_detect(tract_geo$NAME, paste(c("Harris County, Texas", 
+                                                          "Waller County, Texas", 
+                                                          "Montgomery County, Texas", 
+                                                          "Galveston County, Texas", 
+                                                          "Chambers County, Texas", 
+                                                          "Fort Bend County, Texas"), 
+                                                        collapse ="|")),]
+harris_sabs <- census %>% filter(county_served == "HARRIS") %>%
+  filter(!(is.na(estimate_total_pop)))
+
+sum(harris_co[str_detect(harris_co$NAME, "Harris"),]$estimate)
+sum(harris_sabs$population_served_count)
+sum(harris_sabs$estimate_total_pop, na.rm = T)
+
+# what does this look like: 
+leaflet() %>%
+  addProviderTiles(providers$CartoDB.VoyagerNoLabels, group = "Toner Lite") %>%
+  addPolygons(data = harris_sabs,
+              opacity = 0.7,
+              color = "black",
+              weight = 1.9,
+              label = paste0("pwsid:", harris_sabs$pwsid)) %>%
+  addPolygons(data = harris_co,
+              opacity = 0.7,
+              color = "grey",
+              weight = 1,
+              label = harris_co$estimate)
+
+
+# transforming before aw interpolate: 
+harris_sabs <- harris_sabs %>%
+  st_as_sf() %>%
+  st_transform(., crs = 26915)
+harris_co_tracts <- harris_co %>%
+  st_as_sf() %>%
+  st_transform(., crs = 26915)
+
+harris_interpolate <- areal::aw_interpolate(harris_sabs, 
+                                            tid="pwsid",
+                                            source=harris_co_tracts, 
+                                            sid="GEOID", 
+                                            # weight = "sum", 
+                                            weight = "total",
+                                            output="sf", 
+                                            extensive="estimate")
+
+# what did the interpolation estimate: 
+sum(harris_interpolate$estimate, na.rm = T)
+
+################################################################################ 
+# Plots and maps for comparison: 
+################################################################################ 
+harris_method_comp <- harris_interpolate %>%
+  select(pwsid, population_served_count, estimate_total_pop, estimate) %>%
+  rename(sdwis = population_served_count, 
+         crosswalk = estimate_total_pop, 
+         areal_interp = estimate)
+
+ggplot(harris_method_comp, aes(x = sdwis, y = crosswalk)) + 
+  geom_point(color = "blue") + 
+  geom_line(color = "blue") + 
+  geom_point(aes(y = areal_interp), color = "darkred") + 
+  geom_line(aes(y = areal_interp), color = "darkred") + 
+  geom_line(aes(y = sdwis), color = "black") + 
+  geom_point(aes(y = sdwis), color = "black") + 
+  theme_minimal() + 
+  labs(x = "SDWIS", y = "Estimate")
+# wow areal interpolation is a lot closer
+
+
+  ## what does this look like spatially? 
+harris_comp_sf <- harris_method_comp %>%
+  mutate(sdwis_crosswalk_percent_diff = ((sdwis - crosswalk)/((sdwis + crosswalk)/2))*100, 
+         sdwis_interp_percent_diff = ((sdwis - areal_interp)/((sdwis + areal_interp)/2))*100) %>%
+  st_as_sf(.) %>%
+  st_transform(., crs = st_crs(census))
+
+# plotting these as point graphs: 
+ggplot(harris_comp_sf, aes(x = sdwis_crosswalk_percent_diff, y = sdwis)) + 
+  geom_point(color = "blue", alpha = 0.5) +
+  geom_point(aes(x = sdwis_interp_percent_diff), color = "red", 
+             alpha = 0.5) + 
+  theme_minimal() + 
+  labs(x = "% Difference", y = "SDWIS pop") 
+
+# plotting percent difference: 
+ggplot(harris_comp_sf, aes(x = sdwis_crosswalk_percent_diff, 
+                        y = sdwis_interp_percent_diff, 
+                        color = sdwis)) + 
+  geom_point() +
+  theme_minimal() + 
+  labs(x = "% Diff Crosswalk", y = "% Diff Interpolation") + 
+  geom_abline(intercept = 0, slope = 1, lty = "dashed",
+              size = 1, color = "red") + 
+  geom_hline(yintercept = 0, color = "darkred") + 
+  geom_vline(xintercept = 0, color = "darkred")
+
+# mapping: 
+diff_pal <- colorBin(
+  palette = RColorBrewer::brewer.pal(11, "BrBG"),
+  bins = c(-200, -100, -50, 0, 50, 100, 200))
+leaflet() %>%
+  addProviderTiles(providers$CartoDB.VoyagerNoLabels, group = "Toner Lite") %>%
+  addPolygons(data = harris_comp_sf,
+              opacity = 0.9,
+              color = "grey",
+              weight = 1) %>%
+  addPolygons(data = harris_comp_sf,
+              opacity = 0.9,
+              color = ~diff_pal(sdwis_crosswalk_percent_diff),
+              weight = 1,
+              label = paste0("pwsid: ", harris_comp_sf$pwsid,
+                             "; SDWIS: ", harris_comp_sf$sdwis,
+                             "; cross estimate: ", round(harris_comp_sf$crosswalk, 2),
+                             "; areal estimate: ", round(harris_comp_sf$areal_interp, 2),
+                             "; % diff cross: ", 
+                             round(harris_comp_sf$sdwis_crosswalk_percent_diff, 2), 
+                             "; % diff areal: ", 
+                             round(harris_comp_sf$sdwis_interp_percent_diff, 2))) %>%
+  addLegend("bottomright",
+            pal = diff_pal,
+            values = harris_comp_sf$sdwis_crosswalk_percent_diff,
+            title = "% difference",
+            opacity = 1)
+
+## investigating correlation between methods and other vars of interest: 
+vars_comp <- harris_comp_sf %>%
+  left_join(interesting_vars) %>%
+  as.data.frame() %>%
+  select(-geometry) %>%
+  mutate(abs_sdwis_crosswalk_percent_diff = abs(sdwis_crosswalk_percent_diff), 
+         abs_sdwis_interp_percent_diff = abs(sdwis_interp_percent_diff))
+
+all_cor <- cor(vars_comp %>% 
+                 select(c(sdwis, crosswalk, areal_interp, 
+                          service_connections_count, area_miles, pop_density, 
+                          abs_sdwis_crosswalk_percent_diff, 
+                          abs_sdwis_interp_percent_diff)), 
+               use = "pairwise.complete.obs")
+
+cor_pvals <- cor.mtest(all_cor, conf.level = 0.95)
+cor_pvals$p
+
+corrplot(all_cor, method = 'ellipse', type = 'upper', 
+         p.mat = cor_pvals$p, insig = "p-value", sig.level = -1)
+
+################################################################################ 
+# Comparing total population estimates: 
+################################################################################ 
+sum(harris_comp_sf$sdwis)
+sum(harris_comp_sf$crosswalk)
+sum(harris_comp_sf$areal_interp)
+
+# grabbing mean % difference: 
+mean(harris_comp_sf$sdwis_crosswalk_percent_diff, na.rm = T)
+median(harris_comp_sf$sdwis_crosswalk_percent_diff, na.rm = T)
+mean(harris_comp_sf$sdwis_interp_percent_diff, na.rm = T)
+median(harris_comp_sf$sdwis_interp_percent_diff, na.rm = T)
+
+# NOTE: census estimate is JUST harris co, but grabbed all other 
+# counties to complete areal interpolation methods: 
+
+# filtering well data 
+well_census_hco <- well_census %>%
+  filter(counties %in% c("Harris County")) 
+
+sum(well_census_hco$population_served_by_wells_2020)
+
+harris_comp_sf <- harris_comp_sf %>%
+  mutate(sdwis_interp_diff = abs(sdwis - areal_interp), 
+         sdwis_cross_diff = abs(sdwis - crosswalk))
+mean(jco_comp_sf$sdwis_interp_diff)
+mean(jco_comp_sf$sdwis_cross_diff)
+
+ggplot(harris_comp_sf, aes(x = sdwis_crosswalk_percent_diff)) + 
+  geom_histogram() + 
+  geom_histogram(aes(x = sdwis_interp_percent_diff), 
+                 fill = "blue", alpha = 0.5) + 
+  theme_minimal() + 
+  labs(x = "% Difference from SDWIS")
+
+ggplot(harris_comp_sf, aes(x = sdwis_cross_diff)) + 
+  geom_histogram() + 
+  geom_histogram(aes(x = sdwis_interp_diff), 
+                 fill = "blue", alpha = 0.5) + 
+  theme_minimal() + 
+  labs(x = "Absolute Difference from SDWIS")
+```
+
+## Investigating relationship with population density: 
+```{r}
+pop_den <- demo$census %>%
+  select(pwsid, area_miles, pop_density) %>%
+  as.data.frame() %>%
+  select(-geometry)
+pop_den_comparison <- pop_comp_sf %>%
+  left_join(pop_den)
+ggplot(pop_den_comparison, aes(x = sdwis_crosswalk_percent_diff, y = pop_density)) + 
+  geom_point(color = "grey20", alpha = 0.4) +
+  # geom_point(aes(x = sdwis_interp_percent_diff), color = "blue", alpha = 0.4) + 
+  # geom_point(color = "blue", alpha = 0.4) + 
+  geom_smooth(color = "black", fill = "grey") + 
+  theme_minimal() + 
+  labs(x = "% Difference", y = "Population Density")
+```

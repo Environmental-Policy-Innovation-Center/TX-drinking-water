@@ -2,7 +2,7 @@
 title: "TX Drinking Water Data Analysis - Hydrology"
 author: "EmmaLi Tsai"
 date: "2024-02-23"
-last_updated: "2024-03-22"
+last_updated: "2024-04-03"
 output: html_document
 ---
 ## Loading packages 
@@ -330,6 +330,7 @@ ggplot(etx_viols,
 # grabbing stats for 5yr health-based violation bins: 
 viols %>%
     as.data.frame() %>%
+    # filter(east_tx_flag == "yes") %>%
     select(-geometry) %>%
     mutate(viol_bin = cut(healthbased_violations_5yr, 7)) %>%
     group_by(viol_bin) %>%
@@ -337,8 +338,7 @@ viols %>%
               mean_mhi = mean(estimate_mhi, na.rm = T), 
               mean_poc = mean(estimate_poc_alone_per, na.rm = T))
 
-# by deciles(ish), had to break them up into more bins since the data are so 
-# skewed: 
+# grabbing stats for different quantiles: 
 viols %>%
   as.data.frame() %>%
   # filter(east_tx_flag == "yes") %>%
@@ -400,28 +400,25 @@ leaflet() %>%
             opacity = 1)
 
 
-# investigating the relationship between health-based violations and 
-# paperwork violations: 
-ggplot(viols, aes(x = paperwork_violations_10yr, 
-                  y = healthbased_violations_10yr, 
-                  group = pwsid)) + 
-  geom_point(color = "navy", alpha = 0.5) + 
-  geom_line() + 
-  # geom_smooth(color = "darkred") + 
-  theme_minimal() + 
-  geom_point(aes(x = paperwork_violations_5yr, y = healthbased_violations_5yr, 
-                 group = pwsid), 
-             color = "darkred", alpha = 0.5) +
-  labs(x = "Paperwork Violations", y = "Health-based Violations") 
-  # xlim(0, 300) + 
-  # ylim(0, 200)
-
-# how many pwsids in East TX haven't had any violations?
+# how many pwsids in East TX haven't had any heath-based violations?
 viols %>%
   as.data.frame() %>%
   select(-geometry) %>%
   filter(east_tx_flag == "yes") %>%
   filter(healthbased_violations_5yr == 0) %>%
+  summarize(total = length(unique(pwsid)), 
+            mean_poc = mean(estimate_poc_alone_per, na.rm = T), 
+            mean_mhi = mean(estimate_mhi, na.rm = T), 
+              mean_healthbased_10yr = mean(healthbased_violations_10yr), 
+              mean_paperwork_5yr = mean(paperwork_violations_5yr), 
+              mean_paperwork_10yr = mean(paperwork_violations_10yr))
+
+# how many pwsids in East TX have health-baed violations?
+viols %>%
+  as.data.frame() %>%
+  select(-geometry) %>%
+  filter(east_tx_flag == "yes") %>%
+  filter(healthbased_violations_5yr > 0) %>%
   summarize(total = length(unique(pwsid)), 
             mean_poc = mean(estimate_poc_alone_per, na.rm = T), 
             mean_mhi = mean(estimate_mhi, na.rm = T), 
@@ -443,6 +440,22 @@ ggplot(viols_density, aes(x = pop_density,
   xlim(0, 100000) + 
   theme_minimal() + 
   labs(x = "Population Density")
+
+# are 10-yr paperwork violations related to 5-yr healthbased violations?
+viols <- viols %>% 
+  mutate(percent_paperwork_10yr = (paperwork_violations_10yr/total_violations_10yr)*100, 
+         percent_healthbased_10yr = (healthbased_violations_10yr/total_violations_10yr)*100, 
+         percent_paperwork_5yr = (paperwork_violations_5yr/total_violations_5yr)*100, 
+         percent_healthbased_5yr = (healthbased_violations_5yr/total_violations_5yr)*100)
+
+ggplot(viols, aes(x = percent_paperwork_10yr, percent_healthbased_5yr)) + 
+  geom_point() + 
+  geom_point(data = viols %>% filter(percent_healthbased_5yr > (100 - percent_paperwork_10yr)), 
+             color = "darkred") +
+  theme_minimal() + 
+  labs(x = "% 10yr Violations are Not Health-based", 
+       y = "% 5yr Violations are Health-based")
+
 
 # Quick Summary: 
 # 4542 pwsids in total 
@@ -473,31 +486,100 @@ viols <- wds$sdwis
 sdwis_codes <- aws.s3::s3read_using(read.csv, 
                             object = "s3://tech-team-data/state-drinking-water/TX/raw/SDWA_REF_CODE_VALUES.csv") %>%
   janitor::clean_names()
-# grabbing just violation codes:
+
+###############################################################################
+# Looking at violation codes: 
+###############################################################################
+# grabbing just violation codes & merging: 
 violation_codes <- sdwis_codes %>%
   filter(value_type == "VIOLATION_CODE")
 
-viol_type <- merge(viols, violation_codes, by.x = "violation_code", 
+viol_type <- merge(viols, violation_codes, 
+                   by.x = "violation_code", 
                    by.y = "value_code")
 
-# quick summary of how common each are: 
+
+# what are the most common violations?
 viol_type_summary <- viol_type %>%
-  group_by(value_description) %>%
+  # filter(east_tx_flag == "yes") %>%
+  group_by(value_description, is_health_based_ind) %>%
   count()
 
-ggplot(viol_type_summary, aes(x = value_description, y = n)) + 
+ggplot(viol_type_summary, aes(x = value_description, y = n, 
+                              fill = is_health_based_ind)) + 
   geom_bar(stat = "identity") + 
   coord_flip() + 
   theme_minimal()
+
+# what are the most common violations in East TX?
+etx_summary <- viol_type %>%
+  left_join(keys$analysis_keys) %>%
+  filter(east_tx_flag == "yes")%>%
+  group_by(value_description, is_health_based_ind) %>%
+  count()
+
+etx_summary <- etx_summary[order(etx_summary$n),] %>%
+  filter(n>=30)
+ggplot(etx_summary, aes(x = reorder(value_description, -n),
+                        y = n, 
+                        fill = is_health_based_ind)) + 
+  geom_bar(stat = "identity") + 
+  scale_fill_discrete(name = "Health-based?") + 
+  coord_flip() + 
+  theme_minimal() + 
+  labs(y = "Number of Violations", x = "Type of Violation")
 
 # really most of them are monitoring violations (48,812), 
 # followed by public notification violation for NPDWR (26,152), 
 # followed by MCL (18,062)
 # and monitoring and reporting: (14,679)
+
+###############################################################################
+# Looking at contaminant codes: 
+###############################################################################
+cont_codes <- sdwis_codes %>%
+  filter(value_type == "CONTAMINANT_CODE") %>%
+  rename(cont_code = value_code, 
+         cont_type = value_type, 
+         cont_desc = value_description)
+
+cont_viol_type <- merge(viol_type, cont_codes, 
+                        by.x = "contaminant_code", 
+                        by.y = "cont_code")
+
+# quick summary of how common each are: 
+cont_type_summary <- cont_viol_type %>%
+  group_by(value_description, cont_desc, is_health_based_ind) %>%
+  count()
+
+ggplot(cont_type_summary, aes(x = value_description, y = n, 
+                              fill = is_health_based_ind)) + 
+  geom_bar(stat = "identity") + 
+  coord_flip() + 
+  theme_minimal()
+
+# what about just in East TX?
+etx_summary <- cont_viol_type %>%
+  left_join(keys$analysis_keys) %>%
+  filter(east_tx_flag == "yes")%>%
+  group_by(value_description, cont_desc, is_health_based_ind) %>%
+  count()
+
+etx_summary_filt <- etx_summary[order(etx_summary$n),] %>%
+  filter(n>=150)
+ggplot(etx_summary_filt, aes(x = reorder(value_description, -n),
+                        y = n, 
+                        fill = is_health_based_ind)) + 
+  geom_bar(stat = "identity") + 
+  scale_fill_discrete(name = "Health-based?") + 
+  coord_flip() + 
+  theme_minimal() + 
+  labs(y = "Number of Violations", x = "Type of Violation")
 ```
 
 ## Has the system been on a water shortage notice? 
 ```{r}
+# grabbing water shortages and analysis keys: 
 shortages <- wds$water_restrictions
 analysis_keys <- keys$analysis_keys
 
@@ -506,7 +588,7 @@ pwsid_shortages <- merge(analysis_keys, shortages, by = "pwsid",
                          all.y = TRUE) %>%
   st_as_sf() %>%
   st_transform(., crs = st_crs(analysis_keys)) %>%
-  filter(!st_is_empty(pwsid_shortages))
+  filter(!st_is_empty(.))
 
 # mapping to see where these 2023 shortages are located: 
 leaflet() %>%
@@ -527,10 +609,16 @@ leaflet() %>%
             title = "2023 Water Shortage",
             opacity = 1) 
 
-# what are the characteristic of communities on a short water
+###############################################################################
+# what about just East TX?
+###############################################################################
+east_tx_shortages <- pwsid_shortages %>%
+  filter(east_tx_flag == "yes")
+
+# what are the characteristics of communities on a short water
 # notice? 
 pwsid_shortages %>%
-  # group_by(pwsid) %>%
+  filter(east_tx_flag == "yes") %>%
   summarize(mean_poc = mean(estimate_poc_alone_per), 
             mean_mhi = mean(estimate_mhi), 
             mean_hbv_5 = mean(healthbased_violations_5yr), 
@@ -540,25 +628,24 @@ pwsid_shortages %>%
 
 # how does this compare to all pwsids? 
 analysis_keys %>%
-  # group_by(pwsid) %>%
+  filter(east_tx_flag == "yes") %>%
   summarize(mean_poc = mean(estimate_poc_alone_per, na.rm = T), 
             mean_mhi = mean(estimate_mhi, na.rm = T), 
             mean_hbv_5 = mean(healthbased_violations_5yr), 
             mean_hbv_10 = mean(healthbased_violations_10yr), 
             mean_pw_5 = mean(paperwork_violations_5yr), 
             mean_pw_10 = mean(paperwork_violations_10yr))
-
 ```
 
 ## What is the proximity to water-realted hazards? 
 ```{r}
+# grabbing data from EJ screen: 
 ejscreen <- demo$ejscreen %>%
   select(-X)
 
 # Superfund sites (NPL), risk management plan (RMP) proximity, 
 # haz waste (TSDF and LQGs) proximity, underground storage tanks (UST), 
 # and waste water discharges indicator 
-# TODO: decide if we want percentile?
 water_haz <- ejscreen %>%
   select(oid, id, pnpl, prmp, ptsdf, ust, pwdis) %>%
   rename(superfund = pnpl, 
@@ -567,18 +654,67 @@ water_haz <- ejscreen %>%
          storage_tanks = ust, 
          waste_discharge = pwdis)
 
-# note data are at the block group level: 
-bg_crosswalk <- aws.s3::s3read_using(read.csv, 
-                                     object = "s3://tech-team-data/pws_crosswalk/pws_census_blockgroup_weighted_crosswalk.csv") %>%
-                                     select(-X)
+# crosswalking tract data: 
+ej_haz_crosswalked <- merge(water_haz, crosswalk,
+                            by.x = "id", by.y = "tract_geoid")
 
-# crosswalking: 
-# TODO: EJscreen FIPS code is not 12 numbers...why? it's definitely at the 
-# block group level based on the documentation 
-# ej_haz_crosswalked <- merge(water_haz, bg_crosswalk, 
-#                             by.x = "id", by.y = "bg_geoid")
+# grabbing the weighted mean proximity to each hazard: 
+ej_haz_weighted <- ej_haz_crosswalked %>%
+  group_by(pwsid) %>%
+  mutate(superfund_weighted = weighted.mean(superfund, tract_parcel_weight), 
+         rmp_weighted = weighted.mean(rmp, tract_parcel_weight), 
+         haz_waste_weighted = weighted.mean(haz_waste, tract_parcel_weight), 
+         storage_tanks_weighted = weighted.mean(storage_tanks, tract_parcel_weight), 
+         waste_discharge_weighted = weighted.mean(waste_discharge, tract_parcel_weight)) %>%
+  select(pwsid, superfund_weighted:waste_discharge_weighted) %>%
+  left_join(keys$analysis_keys) %>%
+  distinct()
+
+# what's the relationship between these distances and violations? 
+ej_haz_long <- pivot_longer(ej_haz_weighted, superfund_weighted:waste_discharge_weighted)
+ej_haz_long$name <- as.factor(ej_haz_long$name)
+levels(ej_haz_long$name) <- c("Haz Waste", "RMP", 
+                              "Storage Tanks", "Superfund", 
+                              "Waste Discharge")
+ggplot(ej_haz_long, aes(x = value, 
+                        y = healthbased_violations_5yr, 
+                        color = estimate_poc_alone_per)) + 
+  geom_point() + 
+  facet_wrap(~name, scales = "free") + 
+  theme_minimal() + 
+  scale_color_continuous(name = "%POC") + 
+  labs(x = "Distance to Hazard", y = "Health-based Violations, 5yr")
 
 
+# what about general mean distance to a hazard? 
+ej_haz_weighted <- as.data.frame(ej_haz_weighted)
+ej_summary <- ej_haz_weighted %>%
+  mutate(mean_weighed_all = rowMeans(select(ej_haz_weighted, 
+                                            ends_with("_weighted")), 
+                                     na.rm = TRUE)) %>%
+  st_as_sf() 
+  # filter(east_tx_flag == "yes")
+# wow some of these are close
+
+ej_pal <- colorBin(
+  palette = c("#003049","#6b2c39", "#d62828", "#f77f00", "#fcbf49"),
+  bins = c(1, 2, 3, 5, 10, 35), 
+  na.color = "#c9c9bc")
+leaflet() %>%
+  addProviderTiles(providers$CartoDB.VoyagerNoLabels, group = "Toner Lite") %>%
+  addPolygons(data = ej_summary,
+              fillOpacity = 0.9,
+              stroke = TRUE,
+              color = "black",
+              fillColor = ~ej_pal(mean_weighed_all),
+              weight = 1,
+              label = paste0("pwsid: ", ej_summary$pwsid,
+                "; prox: ", round(ej_summary$mean_weighed_all, 2))) %>%
+  addLegend("bottomright",
+            pal = ej_pal,
+            values = ej_summary$mean_weighed_all,
+            title = "Mean Prox to Water Hazards",
+            opacity = 1)
 ```
 
 ## How many boil water notices have there been over the past five years?
@@ -588,8 +724,9 @@ bg_crosswalk <- aws.s3::s3read_using(read.csv,
 
 ## Have there been any enforcement actions?
 ```{r}
+census <- demo$census
 # TODO: add this enforcement action function to the R package: 
-sdwis_enf <- get_SDWIS_enforcement(pwsid = census$pwsid)
+sdwis_enf <- get_SDWIS_enforcement(pwsids = census$pwsid)
 
 # summarizing data by five and ten years: 
 enf_summary_5yr <- sdwis_enf %>%
@@ -1296,10 +1433,12 @@ pwsid_treat %>%
 
 ## What is the source of water? 
 ```{r}
-# basic info from sdwis: 
+###############################################################################
+# investigating water source information from SDWIS:
+###############################################################################
 source <- demo$census
 water_source <- source %>%
-  select(pwsid, primary_source_code) %>%
+  select(pwsid, primary_source_code, county_served) %>%
   mutate(type = "TX")
 
 ggplot(water_source, aes(x = primary_source_code, fill = primary_source_code)) +
@@ -1312,10 +1451,10 @@ ggplot(water_source, aes(x = primary_source_code, fill = primary_source_code)) +
 # adding east TX breakdown: 
 etx_source <- source %>%
   filter(east_tx_flag == "yes") %>%
-  select(pwsid, primary_source_code)%>%
+  select(pwsid, primary_source_code, county_served)%>%
   mutate(type = "East TX")
 
-ggplot(etx_ource, aes(x = primary_source_code, 
+ggplot(etx_source, aes(x = primary_source_code, 
                       fill = primary_source_code)) +
   theme_minimal() + 
   geom_histogram(stat = "count")+ 
@@ -1341,14 +1480,18 @@ ggplot(all_tx, aes(x = primary_source_code, fill = type)) +
   labs(x = "Primary Water Source", y = "Count of PWSIDs")
 
 # also interested in seeing how this relates to actual population: 
+tx_pop <- sum(demo$census$estimate_total_pop, na.rm = T)
+etx_pop <- demo$census %>% 
+  filter(east_tx_flag == "yes") %>%
+  summarize(total_pop = sum(estimate_total_pop, na.rm = T))
 pop_source <- demo$census %>%
   as.data.frame() %>%
   select(-geometry) %>%
   group_by(primary_source_code, east_tx_flag) %>%
   summarize(pop_served = sum(estimate_total_pop, na.rm = T)) %>%
   mutate(percent_pop = 
-           case_when(east_tx_flag == "no" ~ (pop_served / 44291253)*100, 
-                     east_tx_flag == "yes" ~ (pop_served / 4332072)*100))
+           case_when(east_tx_flag == "no" ~ (pop_served / tx_pop)*100, 
+                     east_tx_flag == "yes" ~ (pop_served / etx_pop$total_pop)*100))
 
 # investigating whether east TX source breakdown is similar: 
 pop_source_plot <- demo$census 
@@ -1362,7 +1505,9 @@ ggplot(pop_source_plot, aes(x = primary_source_code,
   theme(legend.position = "none") + 
   labs(x = "",  y = "Estimated Population Served")
 
-# looking at county and groundwater keys: 
+###############################################################################
+# investigating ground water: 
+###############################################################################
 # NOTE: hatched aquifer sare subcrop areas (part of an aquifer that lies or dips
 # below other formations)
 gw_keys <- keys$well_gw_county
@@ -1375,9 +1520,6 @@ county_gw <- gw_keys %>%
   group_by(county_name) %>%
   distinct(value) %>%
   filter(!is.na(value)) 
-
-county_aquifers <- aggregate(value ~ county_name, unique(county_gw), paste, 
-                             collapse = ", ")
 
 # matching pwsid with county and then aquifer 
 pwsid_gw <- water_source %>%
@@ -1420,9 +1562,10 @@ ggplot(etx_pwsid_summary,
   labs(y = "Number of Utilities", x = "Aquifer")
 
 
-#############################
+###############################################################################
 # investigating surface water: 
-#############################
+###############################################################################
+sw_intake_keys <- keys$pwsid_sw
 pwsid_sw <- water_source %>%
   filter(primary_source_code == "SW") %>%
   left_join(sw_intake_keys) 
@@ -1453,7 +1596,6 @@ etx_source %>%
   left_join(sw_intake_keys)  %>%
   select(-geometry) %>%
   filter(alt_res_name != "no matching wtrbdy") %>%
-  group_by(pwsid) %>%
   distinct(pwsid)
 
 
@@ -1469,14 +1611,14 @@ pwsid_sw_basins <- merge(pwsid_sw, simple_basin_info,
                          by.x = "basin_name_short", 
                          by.y = "imp_basin_names", all.x = TRUE)
 
-# which reservoirs link to a bunch of pwsids?
+# which reservoirs match to a bunch of pwsids?
 by_res <- pwsid_sw_basins %>%
   as.data.frame() %>%
   select(-geometry) %>%
   group_by(res_name) %>%
   summarize(total = length(unique(pwsid)))
 
-# linking to east TX: 
+# reservoir matches in East TX
 etx_by_res <- etx_pwsid_sw %>%
   as.data.frame() %>%
   select(-geometry) %>%
@@ -1484,7 +1626,7 @@ etx_by_res <- etx_pwsid_sw %>%
   group_by(res_name) %>%
   summarize(total = length(unique(pwsid)))
 
-# merging with basin info: 
+# narrowing in on East TX: 
 etx_pwsids <- demo$census %>%
   filter(east_tx_flag == "yes") %>%
   distinct() %>%
@@ -1499,60 +1641,22 @@ etx_pwsid_sw_basins <- merge(etx_pwsid_intakes, simple_basin_info,
                          by.x = "basin_name_short", 
                          by.y = "imp_basin_names", all.x = TRUE)
 
+# how many of these are pulling water from the Neches or Neches-Trinity, which 
+# are both basins that are >60% impaired?
+etx_pwsid_intakes %>%
+  filter(basin_name_short %in% c("Neches", "Neches-Trinity")) %>%
+  summarize(total_pwsids = length(unique(pwsid))) 
+# 17 pwsids 
 
-# how many pwsids are getting from basins where the percentage impaired 
-# is greater than 60%?
-pwsid_sw_basins %>%
-  filter(pct_impaired >= 60) %>%
-  summarize(x = length(unique(pwsid)))
+# do these utilities have more health-based violations?
+sw_imp_basins <- etx_pwsid_intakes %>%
+  filter(basin_name_short %in% c("Neches", "Neches-Trinity")) %>%
+  left_join(analysis_keys)
 
-etx_pwsid_sw_basins %>%
-  filter(pct_impaired >= 60) %>%
-  summarize(x = length(unique(pwsid)))
-
-
-# st_intersection of pwsid boundaries pulling surface water to 
-# figure out how many pwsids are pulling from basins that are 
-# impaired by a certain percentage 
-# (NOTE: this assumes pwsids are pulling surface water from the same 
-# basin they're located in)
-basin <- enviro_sw$impaired_basins
-basin_boundaires <- enviro_sw$major_river_basins
-pwsid_imp_basin <- st_intersection(pwsid_sw, basin_boundaires)
-pwsid_imp_basin <- pwsid_imp_basin %>%
-  left_join(basin, by = "basin_num")
-
-pwsid_imp_basin_simp <- pwsid_imp_basin %>%
-  group_by(basin_name.x, pct_impaired) %>%
-  summarize(total_pwsid = length(unique(pwsid)))
-
-ggplot(pwsid_imp_basin_simp, 
-       aes(x = total_pwsid, 
-           y = pct_impaired,
-           color = pct_impaired)) + 
-  geom_point(size = 5) + 
-  scale_color_continuous(name = "% Basin Impaired") + 
-  theme_minimal() + 
-  labs(x = "Number of PWSIDs", y = "% Basin Impaired") 
-
-# summary stats: 
-pwsid_sw_basins %>%
-  as.data.frame() %>%
-  select(-geometry) %>%
-  left_join(analysis_keys) %>%
-  select(-geometry) %>%
-  mutate(pct_imp = cut(pct_impaired, 
-                       breaks = c(quantile(pct_impaired, 
-                                           probs = seq(0, 1, by = 0.20), 
-                                           na.rm = T)), 
-                       include.lowest = TRUE)) %>%
-  group_by(pct_imp) %>%
-  summarize(total_utilities = n(),
-            mean_poc = mean(estimate_poc_alone_per, na.rm = T), 
-            mean_mhi = mean(estimate_mhi, na.rm = T), 
-            mean_health_5yr = mean(healthbased_violations_5yr, na.rm = T),
-            mean_paperwork_5yr = mean(paperwork_violations_5yr, na.rm = T)) 
-
+sw_imp_basins %>%
+  filter(healthbased_violations_5yr > 0) %>%
+  summarize(total = length(unique(pwsid)))
+# 11 of them have had a health-based violation over the past 5 years (64.71%)
 
 
 # Overall findings: 

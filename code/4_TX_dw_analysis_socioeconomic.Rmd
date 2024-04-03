@@ -2,7 +2,7 @@
 title: "TX Drinking Water Data Analysis - Socioeconomic"
 author: "EmmaLi Tsai"
 date: "2024-02-23"
-last_updated: "2024-03-22"
+last_updated: "2024-04-03"
 output: html_document
 ---
 ## Loading packages 
@@ -11,6 +11,7 @@ library(tidyverse)
 library(leaflet)
 library(sf)
 library(aws.s3)
+library(corrplot)
 ```
 
 ## Loading data lists 
@@ -393,8 +394,6 @@ ggplot(all_race, aes(x = value, color = flag, fill = flag)) +
           element_text(angle = 90, 
                        vjust = 0.5, 
                        hjust=1)) 
-
-
 
 # Overall summary: ############################################################
 # - Texas is pretty segregated - % white alone is generally greater than 75%, 
@@ -1090,10 +1089,17 @@ mhi_analysis %>%
             mean_poc = mean(estimate_poc_alone_per, na.rm = T)) 
 
 
-# what about the lowest quintile of income? * added from water team call
+################################################################################
+# Checking out LQI 
+################################################################################
 # checking out lowest quintile of income
 mhi <- demo$census %>%
-  select(pwsid, estimate_mhi)
+  select(pwsid, estimate_mhi) %>%
+  as.data.frame() %>%
+  select(-geometry) %>%
+  left_join(keys$analysis_keys) %>%
+  filter(east_tx_flag == "yes")
+
 # by quintile: 
 mhi %>%
   as.data.frame() %>%
@@ -1104,13 +1110,20 @@ mhi %>%
                                             na.rm = TRUE)), 
                         include.lowest = TRUE)) %>%
   group_by(mhi_bin) %>%
-  summarize(total_utilities = n()) %>%
-  mutate(quintiles = c("0-20","20-40","40-60","60-80","80-100", "NA"))
-# lower 20% = $15,600 - $49,600 inclusive  
+  summarize(total_utilities = n(),
+            paperwork_10yr = mean(paperwork_violations_10yr), 
+            paperwork_5yr = mean(paperwork_violations_5yr), 
+            health_10yr = mean(healthbased_violations_10yr), 
+            health_5yr = mean(healthbased_violations_5yr), 
+            mean_poc = mean(estimate_poc_alone_per, na.rm = T)) %>%
+  mutate(quintiles = c("0-20","20-40","40-60","60-80","80-100", "NA")) %>%
+  relocate(quintiles, .after = mhi_bin)
+# lower 20% = $15,600 - $43,900 inclusive  
 
 # checking out characteristics of this group: 
 lowest_quintile_mhi <- demo$census %>%
-  filter(estimate_mhi <= 49600) 
+  filter(estimate_mhi <= 43900) %>% 
+  filter(east_tx_flag == "yes")
 # there are 1,117, 363 of which are in east tx
 
 # interested in seeing where these are: 
@@ -1120,7 +1133,7 @@ mhi_pal_mini <- colorNumeric(
 
 leaflet() %>%
   addProviderTiles(providers$CartoDB.VoyagerNoLabels, group = "Toner Lite") %>%
-  addPolygons(data = mhi,
+  addPolygons(data = mhi %>% st_as_sf(),
               fillOpacity = 0.9,
               color = ~mhi_pal_mini(estimate_mhi),
               weight = 1,
@@ -1142,14 +1155,27 @@ leaflet() %>%
 
 # What are these utilities paying for water? 
 aff_analysis %>%
-    filter(pwsid %in% lowest_quintile_mhi$pwsid) %>%
-  # filter(!(pwsid %in% lowest_quintile_mhi$pwsid)) %>%
+    # filter(pwsid %in% lowest_quintile_mhi$pwsid) %>%
+  filter(!(pwsid %in% lowest_quintile_mhi$pwsid)) %>%
   mutate(total_water_sewer_year = total_water_year + 
            total_sewer_year) %>%
   summarize(mean_total_water_sewer = mean(total_water_sewer_year), 
             mean_total_water = mean(total_water_year), 
             meean_total_sewer = mean(total_sewer_year))
 
+# How does HCF relate to LQI? 
+lqi_hcf <- aff %>%
+  left_join(keys$analysis_keys, "pwsid") %>%
+  filter(east_tx_flag == "yes")
+
+ggplot(lqi_hcf, aes(x = estimate_mhi, y = hcf)) + 
+  geom_point(aes(color = total_water_year + total_sewer_year)) + 
+  scale_color_continuous(name = "$Water+Sewer/year") + 
+  theme_minimal() + 
+  labs(x = "Annual Median Household Income", 
+       y = "Household Cost Factor") + 
+  geom_vline(xintercept = 43900)
+# Makes sense - they should be related since HCF is calculated using MHI
 
 
 # Overall findings: 
@@ -1166,7 +1192,6 @@ aff_analysis %>%
 # Utilities that fall into the highest quantile of hcf (0.019 - 0.0449) have 
 # the lowest MHI, generally lower %POC,  and the most health-based violations 
 # over the past five and ten years. 
-
 ```
 
 ## What ages reflect those served?
@@ -1473,7 +1498,8 @@ tract_crosswalk <- aws.s3::s3read_using(read.csv,
 
 # CEJST was made off of 2010 tract boundaries - will need to be crosswalked
 # for the crosswalk 
-tract_2010_2020_crosswalk <- read.table("https://www2.census.gov/geo/docs/maps-data/data/rel2020/tract/tab20_tract20_tract10_natl.txt", sep = "|", header = TRUE)
+tract_2010_2020_crosswalk <- read.table("https://www2.census.gov/geo/docs/maps-data/data/rel2020/tract/tab20_tract20_tract10_natl.txt", 
+                                        sep = "|", header = TRUE)
 full_crosswalk <- merge(tract_crosswalk, tract_2010_2020_crosswalk, 
                         by.x = "tract_geoid", 
                         by.y = "GEOID_TRACT_20", all.x = TRUE)
@@ -1517,7 +1543,7 @@ leaflet() %>%
             title = "% CEJST Disadv",
             opacity = 1) 
 
-# box plot to investigate each age bracket: 
+# box plot to investigate each bracket: 
 dac_TX <- cejst_analysis %>%
   select(pwsid, per_disadv_weighted) %>%
   as.data.frame() %>%
@@ -1541,11 +1567,9 @@ ggplot(all_dac, aes(x = flag,
                     y = per_disadv_weighted, 
                     fill = flag)) + 
   geom_violin(alpha = 0.5) + 
-  # geom_histogram(stat = "identity", alpha = 0.5) + 
   scale_fill_discrete(name = "") +
   theme_minimal()  + 
   labs(x = "", y = "Percent of PWSID Disadv by CEJST") 
-
 
 # looking at data by quantile of disadv status: 
 cejst_analysis %>%
@@ -1565,7 +1589,7 @@ cejst_analysis %>%
             mean_mhi = mean(estimate_mhi, na.rm = T)) 
 ```
 
-## Bonus look at stats for cws in TX and comparisons across different scales:
+## Investigating stats for cws in TX and comparisons across different scales:
 ```{r}
 # grabbing stats at different scales: 
 census <- demo$census
@@ -1575,10 +1599,13 @@ east_tx_cws <- census %>%
 sum(census$estimate_total_pop, na.rm = T)
 sum(east_tx_cws$estimate_total_pop, na.rm = T)
 
+# summaries for those served by community water systems: 
 summary(census)
 summary(east_tx_cws)
 
-# how does this compare to all of Texas?
+################################################################################
+# How does this compare to all of Texas?
+################################################################################
 census_vars <- c(total_pop = "B01003_001",
                  # race and ethnicity stats: 
                  black_alone = "B02001_003", 
@@ -1640,7 +1667,11 @@ tx_wide <- tx_wide %>%
             ~((./estimate_total_pop)*100)) %>%
   mutate(estimate_poc_alone = (100 - estimate_white_alone))
 
+summary(tx_wide)
 
+################################################################################
+# How does this compare to all of East Texas?
+################################################################################
 # grabbing East TX stats: 
 etx_census <- tidycensus::get_acs(
   geography = "county", 
@@ -1656,7 +1687,7 @@ etx_census$counties <- trimws(counties[grepl("County", counties)])
 east_tx <- read.csv("./data/raw/east_TX_counties.csv") %>%
   select(-X) %>%
   mutate(county_tidy = paste0(county_name, " County"))
-# running an intersection with east TX geography
+
 east_tx_geo <- etx_census %>%
   filter(counties %in% east_tx$county_tidy) 
 
@@ -1678,18 +1709,36 @@ etx_wide <- etx_wide %>%
 
 summary(etx_wide)
 sum(etx_wide$estimate_total_pop)
+```
 
+## Correlations between variables: 
+```{r}
+census <- demo$census 
 
 # correlation plot across all metrics: 
 all_data <- census %>%
   as.data.frame() %>%
-  # select(-geography) %>%
-  left_join(keys$analysis_keys)
+  left_join(keys$analysis_keys) %>%
+  # focusing on East TX for now: 
+  filter(east_tx_flag == "yes")
 
-all_cor = cor(all_data %>% select(c(healthbased_violations_5yr,paperwork_violations_5yr, 
-                              paperwork_violations_10yr, healthbased_violations_10yr,
-                              area_miles, pop_density, estimate_mhi, 
-                              estimate_white_alone_per:estimate_poc_alone_per)), 
-        use="pairwise.complete.obs")
-corrplot(all_cor, method = 'number') 
+all_cor <- cor(all_data %>% 
+                 select(c(healthbased_violations_5yr,
+                          paperwork_violations_5yr, 
+                          paperwork_violations_10yr,
+                          healthbased_violations_10yr,
+                          area_miles, pop_density, estimate_mhi, 
+                          estimate_laborforce_unemployed, 
+                          estimate_no_school_per:estimate_prof_degree_per,
+                          estimate_hh_below_pov_per,
+                          estimate_foreign_per,
+                          estimate_poc_alone_per, 
+                          service_connections_count)), 
+               use = "pairwise.complete.obs")
+
+cor_pvals <- cor.mtest(all_cor, conf.level = 0.95)
+cor_pvals$p
+
+corrplot(all_cor, method = 'ellipse', type = 'upper', 
+        p.mat = cor_pvals$p, insig = "p-value", sig.level = -1)
 ```
