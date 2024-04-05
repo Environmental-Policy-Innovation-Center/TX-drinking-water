@@ -904,7 +904,7 @@ ggplot(pop_den_comparison, aes(x = sdwis_crosswalk_percent_diff, y = pop_density
 ```
 
 
-## Testing method on full dataset for TX - a small test case: 
+## Testing method - a small test case: 
 ```{r}
 ###############################################################################
 # Finding cutoff point for area: 
@@ -1047,7 +1047,7 @@ tx_wide <- pivot_wider(tx_census,
 # calculating the percent MHI for the entire universe: 
 test <- tx_wide %>%
   select(GEOID, estimate_mhi) %>%
-  mutate(mhi_percent_uni = estimate_mhi / sum(tx_wide$estimate_mhi, na.rm = T))%>%
+  mutate(mhi_percent_uni = estimate_mhi / sum(tx_wide$estimate_mhi, na.rm = T)) %>%
   st_transform(., crs = "ESRI:102296") %>%  
   filter(!st_is_empty(.))
 
@@ -1057,7 +1057,7 @@ test_sdiws <- demo$census %>%
   filter(!st_is_empty(.))%>%
   select(pwsid, geometry)
 
-# interpoltating - need to use summed weights when using the spatially 
+# interpolating - need to use summed weights when using the spatially 
 # intensive method: 
 test_inter <- areal::aw_interpolate(test_sdiws, tid="pwsid", 
                                     source=test, 
@@ -1084,6 +1084,47 @@ ggplot(mhi_comp, aes(x = mhi, y = estimate_mhi)) +
   labs(x = "MHI - Areal Interpolation Method", 
        y = "MHI - Crosswalk Method")
 # sweet - pretty close 1:1 relationship 
+
+## testing methods for calculating % households below poverty: 
+census_hh <- tx_wide %>%
+  select(GEOID, estimate_hh_total, estimate_hh_below_pov)%>%
+  mutate(percent_hh_pov = (estimate_hh_below_pov/estimate_hh_total)*100) %>%
+  st_transform(., crs = "ESRI:102296") %>%  
+  filter(!st_is_empty(.))
+
+hh_test_ext <- areal::aw_interpolate(test_sdiws, tid="pwsid", 
+                                    source=census_hh, 
+                                    sid="GEOID", 
+                                    # weight = "sum",
+                                    weight = "total",
+                                    output="sf", 
+                                    extensive = c("estimate_hh_total", 
+                                                  "estimate_hh_below_pov"))
+
+hh_test_ext <- hh_test_ext %>%
+  mutate(percent_hh_pov = (estimate_hh_below_pov/estimate_hh_total)*100)
+
+hh_test_int <- areal::aw_interpolate(test_sdiws, tid="pwsid", 
+                                    source=census_hh, 
+                                    sid="GEOID", 
+                                    weight = "sum",
+                                    # weight = "total",
+                                    output="sf", 
+                                    intensive = c("percent_hh_pov"))
+
+hh_test_int <- hh_test_int %>%
+  as.data.frame() %>%
+  select(-geometry) %>% 
+  rename(percent_hh_int = percent_hh_pov)
+
+hh_test <- merge(hh_test_ext, hh_test_int)
+ggplot(hh_test, aes(x = percent_hh_int, percent_hh_pov)) + 
+  geom_point() + 
+  # geom_point(data = (sab_census %>% filter(area_miles < 0.054)), color = "red") +
+  labs(x = "Areal Interpolation - Percent to Intensive Method", 
+       y = "Areal Interpolation - Extensive to Percent Method") + 
+  theme_minimal() 
+
 ```
 
 
@@ -1139,8 +1180,7 @@ census_vars <- c(total_pop = "B01003_001",
 tx_census <- tidycensus::get_acs(
   geography = "tract", 
   variables = census_vars, 
-  # grab stats for neighboring states since the crosswalk
-  # uses them for SABs close to the border: 
+  # grab stats for neighboring states since some are close to the border: 
   state = c("TX", "AR", "OK", "NM", "LA"), 
   year = 2020,
   geometry = TRUE
@@ -1160,8 +1200,6 @@ tx_inter <- areal::aw_interpolate(sab, tid = "pwsid",
                                   weight = "total",
                                   output="sf", 
                                   # for some reason, function can't handle a vector
-                                  # some light reorg to make it easier to 
-                                  # calculate percentages: 
                                   extensive = c("estimate_total_pop", 
                                                 "estimate_white_alone", 
                                                 "estimate_black_alone", 
@@ -1196,19 +1234,21 @@ tx_inter <- tx_inter %>%
   mutate(sdwis_flag = case_when(area_miles <= 0.054 ~ "SDWIS", 
                                 TRUE ~ "Areal"))
 
-# interpolating for mhi - since this is spatially intensive and requires 
-# summed weights: 
+
+# interpolating for mhi and % households below poverty- since this is spatially 
+# intensive and requires summed weights. Calculating this household percentage 
+# for small utilities: 
 tx_wide_mhi <- tx_wide %>%
-  mutate(mhi_percent_uni = estimate_mhi / sum(tx_wide$estimate_mhi, na.rm = T))%>%
+  mutate(mhi_percent_uni = estimate_mhi / sum(tx_wide$estimate_mhi, na.rm = T)) %>%
   st_transform(., crs = "ESRI:102296") %>%  
   filter(!st_is_empty(.))
 
-mhi_inter <- areal::aw_interpolate(sab, tid="pwsid", 
-                                   source=tx_wide_mhi, 
-                                   sid="GEOID", 
-                                   weight = "sum",
-                                   output="sf", 
-                                   intensive = "mhi_percent_uni")
+mhi_inter <- areal::aw_interpolate(sab, tid = "pwsid", 
+                                      source = tx_wide_mhi, 
+                                      sid = "GEOID", 
+                                      weight = "sum",
+                                      output ="sf", 
+                                      intensive = c("mhi_percent_uni"))
 
 # recalculating mhi by multiplying by total universe: 
 pwsid_mhi <- mhi_inter %>%
@@ -1217,25 +1257,27 @@ pwsid_mhi <- mhi_inter %>%
   select(-geometry) %>%
   select(pwsid, estimate_mhi)
 
-# reorganizing for clarity: 
+
+# reorganizing and calculating percentages for entire dataset: 
 tx_inter_clean_per <- tx_inter %>%
   select(starts_with(c("pwsid", "area_miles", "sdwis_flag",
                        "population_served_count",
                        "estimate"))) %>%
-  relocate(estimate_total_pop, .before = estimate_age18_24) %>%
-  # adding median household income: 
+  relocate(pwsid) %>%
+  # adding median household income and households below poverty: 
   left_join(pwsid_mhi) %>%
   # leaving out columns that shouldn't be divided:
-  mutate_at(vars(!c("estimate_total_pop", "area_miles", 
-                    "estimate_mhi", "pwsid", "population_served_count", 
-                    "estimate_laborforce", "estimate_laborforce_unemployed", 
-                    "estimate_hh_total", "estimate_hh_below_pov", "sdwis_flag")),
+  mutate_at(vars(!c("pwsid","sdwis_flag", "area_miles", 
+                    "estimate_total_pop", "population_served_count", 
+                    "estimate_mhi", 
+                    "estimate_hh_total", "estimate_hh_below_pov",
+                    "estimate_laborforce", "estimate_laborforce_unemployed")),
             ~((./estimate_total_pop)*100)) %>%
   # calculating percentages where the universe is not total population: 
   mutate(estimate_laborforce_unemployed = (estimate_laborforce_unemployed/estimate_laborforce)*100, 
-         estimate_hh_below_pov = (estimate_hh_below_pov/estimate_hh_total)*100, 
+         estimate_hh_below_pov = (estimate_hh_below_pov/estimate_hh_total)*100,
          estimate_poc_alone = (100 - estimate_white_alone)) %>%
-  relocate("pwsid") %>%
+  relocate(estimate_total_pop, .before = estimate_age18_24) %>%
   as.data.frame() %>%
   select(-c(geometry, area_miles, sdwis_flag, population_served_count))
 colnames(tx_inter_clean_per) <- paste0(colnames(tx_inter_clean_per), "_per")
@@ -1243,40 +1285,58 @@ colnames(tx_inter_clean_per) <- paste0(colnames(tx_inter_clean_per), "_per")
 # merging this back so we have the original census numbers as well:  
 sab_census <- merge(tx_inter, tx_inter_clean_per, by.x = "pwsid", 
                     by.y = "pwsid_per") %>%
-  select(-c(estimate_total_pop_per, estimate_hh_total_per)) %>%
+  # removing potentially misleading and duplicated columns: 
+  select(-c(estimate_total_pop_per, 
+            estimate_hh_total_per, estimate_laborforce_per)) %>%
   rename(estimate_mhi = estimate_mhi_per)
 
-# mutliplying SDWIS populations by percentages found through areal interpolation 
+
+# Fixing SABs with small areas, where the areal interpolation method is 
+# less accurate: 
+# multiplying SDWIS populations by percentages found through areal interpolation 
 # Aiming to keep relative proportion the same for utilities that we decided should
 # use SDWIS estimates
 tx_sdwis_fix <- sab_census %>%
   filter(sdwis_flag == "SDWIS") %>%
   as.data.frame() %>%
-  select(-c(estimate_mhi, estimate_poc_alone_per, geometry)) %>%
+  select(-c(estimate_mhi, estimate_poc_alone_per,
+            estimate_hh_below_pov_per, 
+            estimate_laborforce_unemployed_per, geometry)) %>%
   select("pwsid", "population_served_count", ends_with("_per")) %>%
-  # leaving out columns that shouldn't be divided:
+  # leaving out columns that shouldn't be divided, and finding counts using 
+  # SDWIS and the proportion created by areal interpolation:
   mutate_at(vars(estimate_age18_24_per:estimate_white_alone_per),
             ~((./100)*population_served_count)) %>% 
+  # making this the new estimate total pop
   rename(estimate_total_pop = population_served_count)
 names(tx_sdwis_fix) <- gsub("_per", "", names(tx_sdwis_fix))
+
 
 # tidying fixed dataset to match sab_census for recombining: 
 need_fix <- sab_census %>%
   filter(sdwis_flag == "SDWIS") 
 tx_sdwis_fixed <- merge(need_fix, tx_sdwis_fix, by = "pwsid") %>%
-  select(!ends_with(".x")) 
+  select(!ends_with(".x")) %>%
+  # removing these columns, since we don't have "accurate" raw numbers, just 
+  # the percentage: 
+  mutate(estimate_hh_below_pov = NA, 
+         estimate_hh_total = NA, 
+         estimate_laborforce = NA, 
+         estimate_laborforce_unemployed = NA)
 names(tx_sdwis_fixed) <- gsub("\\.y$", "", names(tx_sdwis_fixed))
 tx_sdwis_fixed <- tx_sdwis_fixed[ ,names(sab_census)]
+
 
 # recombining: 
 sab_census_areal <- sab_census %>% 
   filter(sdwis_flag == "Areal")
-
 sab_census_final <- rbind(sab_census_areal, tx_sdwis_fixed)
 
-# reordering columns: 
+
+# reordering columns
 name_order <- demo$census %>% 
-  mutate(sdwis_flag = "NA")
+  mutate(sdwis_flag = "NA") %>%
+  select(-estimate_laborforce_per)
 sab_census_final_areal <- sab_census_final[ ,names(name_order)]
 ```
 
