@@ -1244,11 +1244,11 @@ tx_wide_mhi <- tx_wide %>%
   filter(!st_is_empty(.))
 
 mhi_inter <- areal::aw_interpolate(sab, tid = "pwsid", 
-                                      source = tx_wide_mhi, 
-                                      sid = "GEOID", 
-                                      weight = "sum",
-                                      output ="sf", 
-                                      intensive = c("mhi_percent_uni"))
+                                   source = tx_wide_mhi, 
+                                   sid = "GEOID", 
+                                   weight = "sum",
+                                   output ="sf", 
+                                   intensive = c("mhi_percent_uni"))
 
 # recalculating mhi by multiplying by total universe: 
 pwsid_mhi <- mhi_inter %>%
@@ -1340,6 +1340,7 @@ name_order <- demo$census %>%
 sab_census_final_areal <- sab_census_final[ ,names(name_order)]
 ```
 
+
 ## Investigating results: 
 ```{r}
 areal_results <- sab_census_final_areal %>%
@@ -1351,4 +1352,108 @@ ggplot(areal_results, aes(x = percent_diff,
                                    y = area_miles)) + 
   geom_point() + 
   geom_point(data = crosswalk_results, color = "red")
+
+
+## where are NAs for median household income? 
+sab_census_final_areal <- sab_census_final_areal %>%
+  st_as_sf() %>%
+  st_transform(., crs = st_crs(tx_census)) 
+
+test_mhi <- mhi_inter %>%
+  mutate(estimate_mhi = mhi_percent_uni*sum(tx_wide$estimate_mhi, 
+                                            na.rm = T)) %>%
+  st_as_sf() %>%
+  st_transform(., crs = st_crs(tx_census))
+  # filter(is.na(estimate_mhi))
+
+mhi_pal <- colorNumeric(
+  palette = viridis::mako(9),
+  domain = test_mhi$estimate_mhi, 
+  na.color = "black")
+
+leaflet() %>%
+  addProviderTiles(providers$CartoDB.VoyagerNoLabels, 
+                   group = "Toner Lite") %>%
+  addPolygons(data = test_mhi,
+              fillOpacity = 0.9,
+              stroke = TRUE,
+              # color = "black",
+              color = ~mhi_pal(estimate_mhi),
+              weight = 1,
+              label = paste0("pwsid: ", test_mhi$pwsid,
+                "; mhi: ", test_mhi$estimate_mhi)) %>%
+  addPolygons(data = tx_wide_mhi %>% 
+                st_as_sf() %>% 
+                st_transform(., crs = st_crs(tx_census)),
+              weight = 1,
+              color = "grey") %>%
+  addPolygons(data = tx_wide_mhi %>% 
+                st_as_sf() %>% 
+                st_transform(., crs = st_crs(tx_census)) %>% 
+                filter(is.na(mhi_percent_uni)), 
+              weight = 1,
+              color = "red")
+
+
+
+# testing areal interpolation of mhi manually: 
+# mhi_inter <- areal::aw_interpolate(sab, tid = "pwsid", 
+#                                    source = tx_wide_mhi, 
+#                                    sid = "GEOID", 
+#                                    weight = "sum",
+#                                    output ="sf", 
+#                                    intensive = c("mhi_percent_uni"))
+
+
+source_data_interp <- raster::interpolate(sab, method = "idw")
+library(gstat)
+i <- idw(mhi_percent_uni~1, sab, grd)
+
+
+sab %>%
+  aw_intersect(source = tx_wide_mhi, areaVar = "area") -> intersect
+
+intersect %>%
+  aw_total(source = tx_wide_mhi, id = GEOID, areaVar = "area", 
+           totalVar = "totalArea",
+             type = "intensive", weight = "sum") -> intersect
+intersect %>%
+  aw_weight(areaVar = "area", totalVar = "totalArea", 
+            areaWeight = "areaWeight") -> intersect
+
+intersect %>%
+  aw_calculate(value = mhi_percent_uni, 
+               areaWeight = "areaWeight") -> intersect
+
+intersect %>%
+  aw_aggregate(target = sab, tid = pwsid, 
+               interVar = mhi_percent_uni) -> result
+
+
+tx_wide_test <- tx_wide_mhi%>%
+  filter(!(st_is_empty(.)))
+source_sp <- as(tx_wide_test, "Spatial")
+
+# Define IDW model
+idw_model <- gstat::idw(mhi_percent_uni ~ 1, source_sp)
+
+# Perform IDW interpolation on the grid
+idw_interpolated <- predict(idw_model, grid)
+
+```
+
+
+## MOE table: 
+```{r}
+census_crosswalk <- demo$census %>%
+  as.data.frame() %>%
+  select(-c(geometry, service_area_type_code)) %>%
+  select(pwsid, estimate_total_pop:estimate_poc_alone_per)
+names(census_crosswalk) <- paste0("crosswalk_", names(census_crosswalk))
+
+census_areal <- sab_census_final_areal
+
+# start of the moe table, with both methods incorporated: 
+moe_table <- merge(census_areal, census_crosswalk, by.x = "pwsid", by.y = "crosswalk_pwsid")
+ 
 ```
