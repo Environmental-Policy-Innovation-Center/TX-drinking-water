@@ -1243,11 +1243,11 @@ tx_wide_mhi <- tx_wide %>%
   st_transform(., crs = "ESRI:102296") %>%  
   filter(!st_is_empty(.))
 
-mhi_inter <- areal::aw_interpolate(sab, tid = "pwsid", 
-                                   source = tx_wide_mhi, 
-                                   sid = "GEOID", 
+mhi_inter <- areal::aw_interpolate(sab, tid = "pwsid",
+                                   source = tx_wide_mhi,
+                                   sid = "GEOID",
                                    weight = "sum",
-                                   output ="sf", 
+                                   output ="sf",
                                    intensive = c("mhi_percent_uni"))
 
 # recalculating mhi by multiplying by total universe: 
@@ -1396,6 +1396,32 @@ leaflet() %>%
 
 
 
+
+# let's try IDW or kriging? 
+mhi <- tx_wide_mhi %>%
+  select(GEOID, NAME, estimate_total_pop, estimate_mhi, mhi_percent_uni)
+
+
+# converting to point data for kriging: 
+# library(sp)
+# library(rgeos)
+
+# library(gstat)
+# census_centroids <- st_centroid(mhi)
+# lat_long <- as.data.frame(st_coordinates(census_centroids))
+# census_centroids <- cbind(census_centroids, lat_long)
+# 
+# lzn.vgm <- variogram(estimate_mhi ~ X + Y, census_centroids, width=0.1)
+# 
+# lzn.fit = fit.variogram(lzn.vgm, vgm(c("Gau", "Sph", "Mat", "Exp")), fit.kappa = TRUE)
+# # 
+# point <- SpatialPointsDataFrame(coordinates(estimate_mhi), 
+#                                 data = estimate_mhi@mhi, 
+#                                 proj4string = CRS(proj4string(estimate_mhi)))
+# 
+# 
+# k.o <- krige(Rpoint ~1, locations=air, newdata=TPU, model=m.RSPAVE.f)
+
 # testing areal interpolation of mhi manually: 
 # mhi_inter <- areal::aw_interpolate(sab, tid = "pwsid", 
 #                                    source = tx_wide_mhi, 
@@ -1404,41 +1430,41 @@ leaflet() %>%
 #                                    output ="sf", 
 #                                    intensive = c("mhi_percent_uni"))
 
-
-source_data_interp <- raster::interpolate(sab, method = "idw")
-library(gstat)
-i <- idw(mhi_percent_uni~1, sab, grd)
-
-
-sab %>%
-  aw_intersect(source = tx_wide_mhi, areaVar = "area") -> intersect
-
-intersect %>%
-  aw_total(source = tx_wide_mhi, id = GEOID, areaVar = "area", 
-           totalVar = "totalArea",
-             type = "intensive", weight = "sum") -> intersect
-intersect %>%
-  aw_weight(areaVar = "area", totalVar = "totalArea", 
-            areaWeight = "areaWeight") -> intersect
-
-intersect %>%
-  aw_calculate(value = mhi_percent_uni, 
-               areaWeight = "areaWeight") -> intersect
-
-intersect %>%
-  aw_aggregate(target = sab, tid = pwsid, 
-               interVar = mhi_percent_uni) -> result
-
-
-tx_wide_test <- tx_wide_mhi%>%
-  filter(!(st_is_empty(.)))
-source_sp <- as(tx_wide_test, "Spatial")
-
-# Define IDW model
-idw_model <- gstat::idw(mhi_percent_uni ~ 1, source_sp)
-
-# Perform IDW interpolation on the grid
-idw_interpolated <- predict(idw_model, grid)
+# 
+# source_data_interp <- raster::interpolate(sab, method = "idw")
+# library(gstat)
+# i <- idw(mhi_percent_uni~1, sab, grd)
+# 
+# 
+# sab %>%
+#   aw_intersect(source = tx_wide_mhi, areaVar = "area") -> intersect
+# 
+# intersect %>%
+#   aw_total(source = tx_wide_mhi, id = GEOID, areaVar = "area", 
+#            totalVar = "totalArea",
+#              type = "intensive", weight = "sum") -> intersect
+# intersect %>%
+#   aw_weight(areaVar = "area", totalVar = "totalArea", 
+#             areaWeight = "areaWeight") -> intersect
+# 
+# intersect %>%
+#   aw_calculate(value = mhi_percent_uni, 
+#                areaWeight = "areaWeight") -> intersect
+# 
+# intersect %>%
+#   aw_aggregate(target = sab, tid = pwsid, 
+#                interVar = mhi_percent_uni) -> result
+# 
+# 
+# tx_wide_test <- tx_wide_mhi%>%
+#   filter(!(st_is_empty(.)))
+# source_sp <- as(tx_wide_test, "Spatial")
+# 
+# # Define IDW model
+# idw_model <- gstat::idw(mhi_percent_uni ~ 1, source_sp)
+# 
+# # Perform IDW interpolation on the grid
+# idw_interpolated <- predict(idw_model, grid)
 
 ```
 
@@ -1455,5 +1481,170 @@ census_areal <- sab_census_final_areal
 
 # start of the moe table, with both methods incorporated: 
 moe_table <- merge(census_areal, census_crosswalk, by.x = "pwsid", by.y = "crosswalk_pwsid")
- 
 ```
+
+
+## Population weighted interpolation method: 
+```{r}
+# loading library: 
+library(tigris)
+
+# loading block weights: 
+tx_blocks <- blocks(
+  state = "TX", 
+  year = 2020)
+
+################################################################################
+## Count census vars:
+################################################################################
+tx_wide_mini_pop <- tx_wide_mhi %>% 
+  st_transform(., crs = st_crs(tx_blocks)) %>%
+  select(estimate_total_pop, estimate_white_alone)
+
+sab_pw <- sab %>% 
+  st_transform(., crs = st_crs(tx_blocks)) %>%
+  filter(county_served == "HARRIS")
+
+pw_inter_pop <- interpolate_pw(
+  from = tx_wide_mini_pop,
+  to = sab_pw,
+  to_id = "pwsid",
+  extensive = TRUE, 
+  weights = tx_blocks,
+  weight_column = "POP20",
+  crs = 32138
+)
+
+
+################################################################################
+## Median household income: 
+################################################################################
+# transforming wide texas stats and sabs
+tx_wide_mini_pw <- tx_wide_mhi %>% 
+  st_transform(., crs = st_crs(tx_blocks)) %>%
+  select(mhi_percent_uni)
+
+# pop weighted interpolation on median household income: 
+mhi_pw_interp <- interpolate_pw(
+  from = tx_wide_mini_pw,
+  to = sab_pw,
+  to_id = "pwsid",
+  extensive = FALSE, 
+  weights = tx_blocks,
+  weight_column = "POP20",
+  crs = 32138
+)
+
+# transforming percentage of universe to actual mhi: 
+pwsid_mhi <- mhi_pw_interp %>%
+  mutate(estimate_mhi = mhi_percent_uni*sum(tx_wide_mhi$estimate_mhi,
+                                            na.rm = T)) %>%
+  st_as_sf() %>%
+  st_transform(., crs = st_crs(tx_blocks))
+
+# what does this actually look like: 
+mhi_pal <- colorNumeric(
+  palette = viridis::mako(9),
+  domain = pwsid_mhi$estimate_mhi, 
+  na.color = "red")
+
+leaflet() %>%
+  addProviderTiles(providers$CartoDB.VoyagerNoLabels, 
+                   group = "Toner Lite") %>%
+  addPolygons(data = pwsid_mhi,
+              fillOpacity = 0.6,
+              stroke = TRUE,
+              # color = "black",
+              color = ~mhi_pal(estimate_mhi),
+              weight = 1,
+              label = paste0("pwsid: ", pwsid_mhi$pwsid,
+                             "; mhi: ", round(pwsid_mhi$estimate_mhi, 2)))
+
+# some MHI are still missing 
+
+################################################################################
+## Bringing everything back together: 
+################################################################################
+pwsid_mhi_df <- pwsid_mhi %>%
+  as.data.frame() %>%
+  select(-geometry)
+
+all_census <- pw_inter_pop %>%
+  left_join(pwsid_mhi_df)
+
+na_pw <- all_census %>%
+  filter(is.na(estimate_total_pop))
+
+################################################################################
+## Fixing NAs
+################################################################################
+tx_wide_mini_pop <- tx_wide_mhi %>% 
+  st_transform(., crs = "ESRI:102296") %>%
+  select(GEOID, estimate_total_pop, estimate_white_alone)
+
+sab_pw <- sab %>% 
+  filter(county_served == "HARRIS") %>%
+    st_transform(., crs = "ESRI:102296")
+
+# ar_validate(source = tx_wide_mini_pop, target = sab_pw, 
+#             varList = "estimate_total_pop", 
+#             verbose = T)
+
+aw_inter_pop <- areal::aw_interpolate(sab_pw, tid = "pwsid", 
+                      source = tx_wide_mini_pop, 
+                      sid= "GEOID", 
+                      weight = "total",
+                      output="sf", 
+                      extensive = c("estimate_total_pop", 
+                                    "estimate_white_alone"))
+
+aw_inter_pwsid <- aw_inter_pop %>%
+  filter(pwsid %in% unique(na_pw$pwsid)) %>%
+  mutate(estimate_white_alone_per = 100*(estimate_white_alone/estimate_total_pop), 
+         estimate_white_alone = (estimate_white_alone_per/100)*population_served_count, 
+         estimate_total_pop = population_served_count)
+
+# doing mhi using spatially intensive approach: 
+tx_wide_mini_aw <- tx_wide_mhi %>% 
+  st_transform(., crs = "ESRI:102296") %>%
+  select(GEOID, estimate_mhi, mhi_percent_uni)
+
+aw_inter_mhi <- areal::aw_interpolate(sab_pw, tid = "pwsid", 
+                                      source = tx_wide_mini_aw, 
+                                      sid= "GEOID", 
+                                      weight = "sum",
+                                      output="sf", 
+                                      intensive = c("mhi_percent_uni"))
+# putting back in context from universe: 
+aw_inter_pwsid_mhi <- aw_inter_mhi %>%
+  filter(pwsid %in% unique(na_pw$pwsid)) %>%
+  mutate(estimate_mhi = mhi_percent_uni*sum(tx_wide_mini_aw$estimate_mhi, na.rm = T)) %>%
+  as.data.frame() %>%
+  select(-geometry) %>%
+  select(pwsid, mhi_percent_uni, estimate_mhi)
+
+# recombining with NA datastet: 
+aw_inter_fill <- aw_inter_pwsid %>%
+  left_join(aw_inter_pwsid_mhi)
+
+# recombining with entire dataset: 
+head(all_census)
+aw_inter_fill_mini <- aw_inter_fill %>%
+  select(pwsid, estimate_total_pop, estimate_white_alone, 
+         mhi_percent_uni, estimate_mhi) %>%
+  mutate(interpolation_method = "areal_sdwis") %>%
+    st_transform(., crs = "ESRI:102296") 
+
+pw_inter_complete <- all_census %>%
+  filter(!(is.na(estimate_total_pop))) %>%
+  mutate(interpolation_method = "pop_weighted") %>%
+  st_transform(., crs = "ESRI:102296") 
+
+complete_data <- rbind(aw_inter_fill_mini, pw_inter_complete)
+
+# there are 8 entries that have 0 total pop 
+```
+
+
+
+
