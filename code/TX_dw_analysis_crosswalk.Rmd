@@ -2,7 +2,7 @@
 title: "TX Drinking Water Data Analysis - Crosswalk"
 author: "EmmaLi Tsai"
 date: "2024-04-01"
-last_updated: "2024-04-04"
+last_updated: "2024-04-10"
 output: html_document
 ---
 
@@ -2023,4 +2023,416 @@ missing_df <- missing_df[, names(final_pw_xwalk)]
 complete_crosswalk <- rbind(final_pw_xwalk, missing_df)
 ```
 
+## Investigating output:
+```{r}
+complete_crosswalk_sf <- complete_crosswalk %>%
+    st_transform('+proj=longlat +datum=WGS84')
 
+pop_pal <- colorNumeric(
+  palette = viridis::viridis(9),
+  domain = complete_crosswalk_sf$estimate_total_pop,
+  na.color = "red")
+
+leaflet() %>%
+  addProviderTiles(providers$CartoDB.VoyagerNoLabels,
+                   group = "Toner Lite") %>%
+  addPolygons(data = complete_crosswalk_sf,
+              fillOpacity = 0.3,
+              stroke = TRUE,
+              # color = "black",
+              color = ~pop_pal(estimate_total_pop),
+              weight = 1,
+              label = paste0("pwsid: ", complete_crosswalk_sf$pwsid,
+                             "; mhi: ", round(complete_crosswalk_sf$estimate_mhi, 2), 
+                             "; pop: ", round(complete_crosswalk_sf$estimate_total_pop, 2)))
+
+
+# what's the breakdown:
+complete_crosswalk %>%
+  as.data.frame() %>%
+  select(-geometry) %>%
+  group_by(tier_crosswalk) %>%
+  summarize(n())
+```
+
+
+## Scaling final function up to all of TX and all census vars: 
+```{r}
+################################################################################
+## Data prep: 
+################################################################################
+# grabbing SABs: 
+sab <- demo$census %>%
+  select(pwsid:pop_density, service_area_type_code)%>%
+  st_transform(., crs = "EPSG:32138") %>%
+  filter(!st_is_empty(.))
+
+pwsids <- unique(sab$pwsid)
+
+# grabbing census data: 
+census_vars <- c(total_pop = "B01003_001",
+                 # race and ethnicity stats: 
+                 black_alone = "B02001_003", 
+                 asian_alone = "B02001_005", 
+                 white_alone = "B02001_002", 
+                 AIAN_alone = "B02001_004", 
+                 NAPI_alone = "B02001_006", 
+                 other_alone = "B02001_007", 
+                 mixed_alone = "B02001_008",
+                 hisp_alone = "B03003_003", 
+                 # MHI - will have to do mhi separately since it is a non-count 
+                 # varibale 
+                 mhi = "B19013_001",
+                 # labor force and unemployment: 
+                 laborforce = "B23025_003",  # universe: pop > 16
+                 laborforce_unemployed = "B23025_005", # universe: pop > 16
+                 # households below poverty level: 
+                 hh_total = "B17017_001",
+                 hh_below_pov = "B17017_002", 
+                 # age stats: 
+                 ageunder_5  = "B06001_002",
+                 age5_17 = "B06001_003", 
+                 age18_24 = "B06001_004",
+                 age25_34 = "B06001_005", 
+                 age35_44 = "B06001_006", 
+                 age45_54 = "B06001_007", 
+                 age55_59 = "B06001_008", 
+                 age60_61 = "B06001_009",
+                 # language spoken at home: 
+                 only_english = "B99162_002",  # universe: pop >5
+                 other_lang = "B99162_003", # universe: pop >5
+                 # education categories: 
+                 no_school = "B15003_002", 
+                 high_school = "B15003_017", 
+                 bachelors = "B15003_022",
+                 prof_degree = "B15003_024", 
+                 # nationality: 
+                 foreign = "B99051_005")
+
+tx_census <- tidycensus::get_acs(
+  geography = "tract", 
+  variables = census_vars, 
+  # grab stats for neighboring states since some are close to the border: 
+  state = c("TX", "AR", "OK", "NM", "LA"), 
+  year = 2020,
+  geometry = TRUE
+) 
+
+tx_wide <- pivot_wider(tx_census, 
+                       names_from = c("variable"), 
+                       values_from = c("estimate", "moe")) %>%
+  select(GEOID:estimate_other_lang) %>%
+  st_transform(., crs = "EPSG:32138") %>%
+  mutate(mhi_percent_uni = estimate_mhi / sum(tx_wide$estimate_mhi, na.rm = T))
+
+
+# tract crosswalk for tier 2: 
+tract_crosswalk <- aws.s3::s3read_using(read.csv, 
+                                         object = "s3://tech-team-data/pws_crosswalk/pws_census_tract_weighted_crosswalk.csv") %>%
+  select(-X) %>%
+  filter(pwsid %in% pwsids) %>%
+  # if the geoid is missing prefix 0, add it back in
+  mutate(tract_geoid = as.character(tract_geoid),
+         tract_geoid = case_when(
+           str_length(tract_geoid) == 10 ~ paste0(0, tract_geoid),
+           TRUE ~ tract_geoid
+         )) %>%
+  # there are 7 tract geoids in the crosswalk are NAs - assuming these are errors? 
+  filter(!(is.na(tract_geoid)))
+
+
+# loading block weights for pw_interpolation: 
+tx_blocks <- tigris::blocks(
+  state = "TX", 
+  year = 2020)
+
+################################################################################
+## Tier 1: Population-weighted interpolation: 
+################################################################################
+# pw interpolation on count vars where the universe is total population: 
+tx_wide_pop <- tx_wide %>% 
+  select(estimate_total_pop:estimate_other_lang) %>%
+  # leaving these columns out because their universe is different
+  select(-c(estimate_hh_total, estimate_hh_below_pov, 
+            estimate_mhi))
+
+pw_inter_pop <- interpolate_pw(
+  from = tx_wide_pop,
+  to = sab,
+  to_id = "pwsid",
+  extensive = TRUE, 
+  weights = tx_blocks,
+  weight_column = "POP20",
+  crs = 32138)
+
+## Households below poverty: 
+tx_wide_hh <- tx_wide %>% 
+  select(estimate_hh_total, estimate_hh_below_pov)
+
+# since we're using household data, should we use housing20 as weights? I'm 
+# sure they're correlated but feel more comfortable using housing density 
+# as weights when working with housing data: 
+pw_inter_hh <- interpolate_pw(
+  from = tx_wide_hh,
+  to = sab,
+  to_id = "pwsid",
+  extensive = TRUE, 
+  weights = tx_blocks,
+  weight_column = "HOUSING20",
+  crs = 32138)
+
+pwsid_hh <- pw_inter_hh %>%
+  mutate(estimate_hh_below_pov_per = 100*(estimate_hh_below_pov/estimate_hh_total)) 
+  # select(pwsid, estimate_hh_below_pov_per)
+
+
+## Median household income: 
+tx_wide_mhi <- tx_wide %>% 
+  select(mhi_percent_uni)
+
+# pop weighted interpolation on median household income: 
+pw_interp_mhi <- interpolate_pw(
+  from = tx_wide_mhi,
+  to = sab,
+  to_id = "pwsid",
+  extensive = FALSE, 
+  weights = tx_blocks,
+  weight_column = "POP20",
+  crs = 32138
+)
+
+# transforming percentage of universe to actual mhi: 
+pwsid_mhi <- pw_interp_mhi %>%
+  mutate(estimate_mhi = mhi_percent_uni*sum(tx_wide$estimate_mhi,
+                                            na.rm = T)) 
+
+## Bringing everything back together: 
+pwsid_mhi_df <- pwsid_mhi %>%
+  as.data.frame() %>%
+  select(-geometry)
+
+pwsid_hh_df <- pwsid_hh %>%
+  as.data.frame() %>%
+  select(-geometry)
+
+# all census data: 
+all_census <- pw_inter_pop %>%
+  left_join(pwsid_mhi_df) %>%
+  left_join(pwsid_hh_df)
+
+# filtering NAs for tier 1: 
+pw <- all_census %>%
+  filter(!(is.na(estimate_total_pop) | estimate_total_pop == 0)) %>%
+  mutate(tier_crosswalk = "tier_1")
+
+
+# calculating percentages: 
+pw_per <- pw %>%
+  as.data.frame() %>%
+  select(-geometry) %>%
+  select(starts_with(c("estimate", "pwsid"))) %>%
+  mutate_at(vars(!c("estimate_total_pop", "estimate_mhi", "pwsid", 
+                    "estimate_hh_total", "estimate_hh_below_pov", 
+                    "estimate_laborforce", "estimate_laborforce_unemployed", 
+                    "estimate_hh_below_pov_per")), 
+            ~((./estimate_total_pop)*100)) %>%
+  relocate("pwsid") %>%
+  select(-c(estimate_hh_below_pov_per, estimate_hh_below_pov, 
+            estimate_mhi, estimate_total_pop, 
+            estimate_laborforce_unemployed, estimate_hh_total))
+  # mutate(estimate_poc_alone = (100 - estimate_white_alone)) 
+colnames(pw_per) <- paste0(colnames(pw_per), "_per")
+
+# merging percentages back with original counts and organizing columns: 
+pw_final <- merge(pw, pw_per,
+                  by.x = "pwsid", by.y = "pwsid_per") %>%
+  # recalculating % households in poverty and % labor force unemployed
+  mutate(estimate_hh_below_pov_per = (estimate_hh_below_pov/estimate_hh_total*100), 
+         estimate_laborforce_unemployed_per = (estimate_laborforce_unemployed/estimate_laborforce)*100) %>%
+  relocate(tier_crosswalk, .after = pwsid) %>%
+  relocate(estimate_laborforce_unemployed_per, .after = estimate_other_lang_per) %>%
+  relocate(estimate_hh_below_pov_per, .after = estimate_laborforce_unemployed_per) %>%
+  relocate(estimate_laborforce:estimate_laborforce_unemployed, .after = estimate_other_lang)
+
+################################################################################
+## Tier 2: crosswalking 
+################################################################################
+# locating the pwsids that fell out of pw interpolation: 
+xwalk <- all_census %>%
+  filter(is.na(estimate_total_pop) | estimate_total_pop == 0) 
+
+# data prep: 
+pwsid_cross <- tract_crosswalk %>%
+  filter(pwsid %in% xwalk$pwsid) 
+ 
+tx_wide_cross <- tx_wide %>%
+  select(GEOID, estimate_total_pop:estimate_other_lang)
+
+
+# merging tx census stats with crosswalk: 
+pwsid_xwalk <- merge(tx_wide_cross, pwsid_cross, 
+                      by.x = "GEOID", by.y = "tract_geoid", all.y = T)
+
+# multiplying census stats by tract weights:
+pwsid_weight_xwalk <- pwsid_xwalk %>% 
+  mutate(across(estimate_total_pop:estimate_hh_below_pov, ~.*tract_parcel_weight)) %>%
+  mutate(across(estimate_laborforce:estimate_other_lang, ~.*tract_parcel_weight))
+
+# sum across pwsid and estimate mhi using a weighted mean: 
+pwsid_weighted_xwalk <- pwsid_weight_xwalk %>%
+  group_by(pwsid) %>% 
+  summarize(across(estimate_total_pop:estimate_hh_below_pov, ~round(sum(.), 2)), 
+            estimate_mhi = weighted.mean(estimate_mhi, tract_parcel_weight, na.rm = TRUE), 
+            across(estimate_laborforce:estimate_other_lang, ~round(sum(.), 2))) 
+
+
+# calculating percentage: 
+pwsid_weighted_per <- pwsid_weighted_xwalk %>%
+  as.data.frame() %>%
+  select(-geometry) %>%
+  select(starts_with(c("estimate", "pwsid"))) %>%
+  mutate_at(vars(!c("estimate_total_pop", "estimate_mhi", "pwsid")), 
+            ~((./estimate_total_pop)*100)) %>%
+  relocate("pwsid") 
+  # mutate(estimate_poc_alone = (100 - estimate_white_alone)) 
+colnames(pwsid_weighted_per) <- paste0(colnames(pwsid_weighted_per), "_per")
+
+# merging percentages back with original counts: 
+pwsid_xwalked <- merge(pwsid_weighted_xwalk, pwsid_weighted_per,
+                       by.x = "pwsid", by.y = "pwsid_per") %>%
+  select(-c("estimate_total_pop_per", "estimate_mhi_per")) %>%
+  select(-c("estimate_hh_total_per")) %>%
+  # recalculating % households in poverty and % labor force unemployed
+  mutate(estimate_hh_below_pov_per = (estimate_hh_below_pov/estimate_hh_total*100), 
+         estimate_laborforce_unemployed_per = (estimate_laborforce_unemployed/estimate_laborforce)*100)
+
+
+# want to cap max total pop to those reported by SDWIS: 
+sdwis_pop <- sab %>%
+  as.data.frame() %>%
+  select(-geometry) %>%
+  select(pwsid, population_served_count)
+
+sdwis_xwalk <- pwsid_xwalked %>%
+  left_join(sdwis_pop) %>%
+  relocate(population_served_count, .before = estimate_total_pop) 
+  
+# capping max pop at SDWIS values: 
+sdwis_pop <- sdwis_xwalk %>%
+  filter(estimate_total_pop > population_served_count) 
+
+sdwis_counts <- sdwis_pop %>%
+  as.data.frame() %>%
+  select(-geometry) %>%
+  pivot_longer(., estimate_white_alone_per:estimate_other_lang_per) %>%
+  select(pwsid, population_served_count, estimate_total_pop, name, value) %>%
+  mutate(raw_count = (value/100) * population_served_count, 
+         col_name = gsub("_per", "", name)) %>%
+  select(pwsid, population_served_count, estimate_total_pop, raw_count, col_name) %>%
+  pivot_wider(., names_from = col_name, values_from = raw_count) %>%
+  mutate(estimate_total_pop = population_served_count,
+         # we can no longer estimate number of households using this method
+         estimate_hh_total = NA,
+         tier_crosswalk = "tier_2_sdiwspop")
+
+# combining this back with percentages: 
+sdwis_per <- sdwis_pop %>% 
+  select(pwsid, estimate_mhi, 
+         estimate_white_alone_per:estimate_other_lang_per) 
+
+sdwis_pop_final <- merge(sdwis_counts, sdwis_per, by = "pwsid")
+
+
+# recombining with other pwsids where xwalk < SDWIS: 
+xwalk_pop <-  sdwis_xwalk %>%
+  filter(estimate_total_pop < population_served_count) %>%
+  mutate(tier_crosswalk = "tier_2_xwalkpop")
+
+sdwis_pop_final <- sdwis_pop_final[, names(xwalk_pop)]
+
+final_xwalk <- rbind(sdwis_pop_final, xwalk_pop) %>%
+  select(-population_served_count) %>%
+  mutate(mhi_percent_uni = NA) %>%
+  st_as_sf() %>%
+  st_transform(., st_crs(pw))
+
+
+################################################################################
+## Combining tier 1 and 2 methods & tier 3 designation: 
+################################################################################
+final_xwalk <- final_xwalk[, names(pw_final)]
+final_pw_xwalk <- rbind(pw_final, final_xwalk)
+
+# just need to combine with missing pwsids, with NAs for all columns 
+missing <- sab %>%
+  filter(!(pwsid %in% final_pw_xwalk$pwsid))
+# # they're all missing from the crosswalk :-(
+# merge(pwsid_cross, missing, by = "pwsid")
+# merge(as.data.frame(pw_final), missing, by = "pwsid")
+
+# adding these back in, but as tier 3: 
+missing_df <- final_pw_xwalk[nrow(final_pw_xwalk)+1:nrow(missing),] 
+missing_df$pwsid <- missing$pwsid 
+missing_df <- missing_df %>%
+  as.data.frame() %>%
+  select(-geometry) %>%
+  mutate(tier_crosswalk = "tier_3")
+
+# adding back geometries 
+missing_sab_geoms <- missing %>%
+  select(pwsid)
+
+missing_sf <- missing_df %>%
+  left_join(missing_sab_geoms) %>%
+  st_as_sf() %>%
+  st_transform(., crs = st_crs(final_pw_xwalk))
+
+# completing crosswalk: 
+complete_crosswalk <- rbind(final_pw_xwalk, missing_sf)
+complete_crosswalk_df <- complete_crosswalk %>% 
+  mutate(estimate_poc_alone_per = 100 - estimate_white_alone_per) %>%
+  relocate(estimate_poc_alone_per, .after = estimate_mixed_alone_per) %>%
+  as.data.frame() %>%
+  select(-geometry) %>%
+  select(-mhi_percent_uni)
+
+# merge back with sab information: 
+final_sab <- merge(sab, complete_crosswalk_df, 
+                   by = "pwsid")
+```
+
+## Quick visual checks: 
+```{r}
+
+final_sab_sf <- final_sab %>%
+  st_transform("+proj=longlat +datum=WGS84")
+
+pop_pal <- colorNumeric(
+  palette = viridis::viridis(9),
+  domain = final_sab_sf$estimate_mhi,
+  na.color = "grey")
+
+leaflet() %>%
+  addProviderTiles(providers$CartoDB.VoyagerNoLabels,
+                   group = "Toner Lite") %>%
+  addPolygons(data = final_sab_sf,
+              fillOpacity = 1,
+              stroke = TRUE,
+              # color = "black",
+              color = ~pop_pal(estimate_mhi),
+              weight = 1,
+              label = paste0("pwsid: ", final_sab_sf$pwsid,
+                             "; mhi: ", round(final_sab_sf$estimate_mhi, 2), 
+                             "; pop: ", round(final_sab_sf$estimate_total_pop, 2))) %>%
+  addLegend("bottomright",
+            pal = pop_pal,
+            values = final_sab_sf$estimate_mhi,
+            title = "MHI",
+            opacity = 1)
+
+final_sab %>%
+  as.data.frame() %>%
+  select(-geometry) %>%
+  group_by(tier_crosswalk) %>%
+  summarize(n())
+```

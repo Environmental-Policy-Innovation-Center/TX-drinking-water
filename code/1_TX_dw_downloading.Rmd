@@ -2,7 +2,7 @@
 title: "Texas Drinking Water Data Downloading"
 author: "EmmaLi Tsai"
 date: "2024-01-29"
-last_updated: "2024-03-21"
+last_updated: "2024-04-10"
 output: html_document
 ---
 
@@ -20,6 +20,8 @@ library(httr)
 library(readxl)
 library(jsonlite)
 library(googlesheets4)
+library(tigris)
+options(tigris_use_cache = TRUE)
 # remotes::install_github("environmental-policy-innovation-center/stateDW", 
 #                         auth_token = "insert-github-pat-here")
 library(stateDW)
@@ -52,10 +54,9 @@ _______________________________________________________________________________
 
 ## Demographic #################################################################
 # grabbing sabs: 
-sab <- get_sab(states = c("TX"), crs = ("ESRI:102339"))
+sab <- get_sab(states = c("TX"), crs = ("EPSG:32138"))
 
 # census data - grabbing at the tract level
-# vars_acs <- load_variables(year = 2021, "acs5")
 census_vars <- c(total_pop = "B01003_001",
                  # race and ethnicity stats: 
                  black_alone = "B02001_003", 
@@ -118,22 +119,58 @@ census_tidy <- census_tidy %>%
     str_detect(NAME, "Texas") ~ "Texas"
   ))
 
-# running an intersection to JUST grab the pwsids in or close to the border of 
-# TX - since some state_code == "TX" don't exist in TX: 
-tx_only <- census_tidy %>% filter(state == "Texas")
+
+# grabbing pwsids in or close to the border of TX, since some
+# state_code == "TX" don't exist in TX: 
+tx_only <- census_tidy %>% 
+  filter(state == "Texas") 
 tx <- st_union(tx_only) %>%
-  st_buffer(., dist = 0.01)
+  st_buffer(., dist = 0.01) 
 sab_sf <- st_transform(sab, crs = st_crs(tx))
 tx_sabs <- st_intersection(sab_sf, tx)
 # NOTE: there are ~ four pwsids (one of which starts with "NY") that have 
 # actual boundaries in TX. 
 
 # filtering for intersected SABs to retain original geographies: 
-all_tx_sabs <- sab_sf %>% filter(pwsid %in% tx_sabs$pwsid)
+all_tx_sabs <- sab_sf %>% 
+  filter(pwsid %in% tx_sabs$pwsid)
+  # st_transform(., crs = st_crs(sab))
 pwsids <- unique(all_tx_sabs$pwsid)
 
 
-## crosswalking census data: 
+# creating a flag for when the county is within East TX: 
+east_tx <- read.csv("./data/raw/east_TX_counties.csv") %>%
+  select(-X) %>%
+  mutate(county_tidy = paste0(county_name, " County"))
+# running an intersection with east TX geography
+east_tx_geo <- census_tidy %>%
+  filter(counties %in% east_tx$county_tidy) %>%
+  filter(state == "Texas") %>%
+  st_union()
+east_tx_sabs <- st_intersection(all_tx_sabs, east_tx_geo)
+east_tx_pwsids <- unique(east_tx_sabs$pwsid)
+# creating flag: 
+sab_flag <- all_tx_sabs %>%
+  mutate(east_tx_flag = case_when(
+    pwsid %in% east_tx_pwsids ~ "yes",
+    TRUE ~ "no")
+  ) %>%
+  relocate(east_tx_flag, .after = "county_served") %>%
+  st_transform(., crs = ("EPSG:32138"))
+
+
+###############################################################################
+# Start of tiered crosswalk approach: 
+###############################################################################
+# pivoting census to wide format: 
+tx_wide <- pivot_wider(census_tidy, 
+                       names_from = c("variable"), 
+                       values_from = c("estimate", "moe")) %>%
+  select(GEOID, estimate_total_pop:estimate_other_lang) %>%
+  st_transform(., crs = "EPSG:32138") %>%
+  mutate(mhi_percent_uni = estimate_mhi / sum(tx_wide$estimate_mhi, na.rm = T))
+
+# tract crosswalk for tier 2: 
 tract_crosswalk <- aws.s3::s3read_using(read.csv, 
                                          object = "s3://tech-team-data/pws_crosswalk/pws_census_tract_weighted_crosswalk.csv") %>%
   select(-X) %>%
@@ -144,84 +181,263 @@ tract_crosswalk <- aws.s3::s3read_using(read.csv,
            str_length(tract_geoid) == 10 ~ paste0(0, tract_geoid),
            TRUE ~ tract_geoid
          )) %>%
-  # there are 7 tract geoids in the crosswalk are NAs - assuming these are errors? 
+  # there are 7 tract geoids in the crosswalk are NAs - assuming these are errors?
   filter(!(is.na(tract_geoid)))
 
-census_wide <- pivot_wider(census_tidy, 
-                           names_from = c("variable"), 
-                           values_from = c("estimate", "moe"))  
+# loading block weights for pw_interpolation: 
+tx_blocks <- tigris::blocks(
+  state = "TX", 
+  year = 2020) %>%
+  st_transform(., crs = "EPSG:32138")
 
-sab_cross_census <- merge(census_wide, 
-                          tract_crosswalk, 
-                          by.x = "GEOID", 
-                          by.y = "tract_geoid", all.x = T)
+################################################################################
+## Tier 1: Population-weighted interpolation: 
+################################################################################
+# pw interpolation on count vars where the universe is total population: 
+tx_wide_pop <- tx_wide %>% 
+  select(estimate_total_pop:estimate_other_lang) %>%
+  # leaving these columns out because their universe is different
+  select(-c(estimate_hh_total, estimate_hh_below_pov, 
+            estimate_mhi))
 
-# multiplying census stats by tract weights - purposefully leaving out mhi to 
-# calculate that using a weighted mean: 
-sab_cross_census_weight <- sab_cross_census %>% 
+pw_inter_pop <- interpolate_pw(
+  from = tx_wide_pop,
+  to = sab,
+  to_id = "pwsid",
+  extensive = TRUE, 
+  weights = tx_blocks,
+  weight_column = "POP20",
+  crs = 32138)
+
+## Households below poverty: 
+tx_wide_hh <- tx_wide %>% 
+  select(estimate_hh_total, estimate_hh_below_pov)
+
+# since we're using household data, should we use housing20 as weights
+pw_inter_hh <- interpolate_pw(
+  from = tx_wide_hh,
+  to = sab,
+  to_id = "pwsid",
+  extensive = TRUE, 
+  weights = tx_blocks,
+  weight_column = "HOUSING20",
+  crs = 32138)
+
+pwsid_hh <- pw_inter_hh %>%
+  mutate(estimate_hh_below_pov_per = 100*(estimate_hh_below_pov/estimate_hh_total)) 
+
+## Median household income: 
+tx_wide_mhi <- tx_wide %>% 
+  select(mhi_percent_uni)
+
+# pop weighted interpolation on median household income: 
+pw_interp_mhi <- interpolate_pw(
+  from = tx_wide_mhi,
+  to = sab,
+  to_id = "pwsid",
+  extensive = FALSE, 
+  weights = tx_blocks,
+  weight_column = "POP20",
+  crs = 32138
+)
+
+# transforming percentage of universe to actual mhi: 
+pwsid_mhi <- pw_interp_mhi %>%
+  mutate(estimate_mhi = mhi_percent_uni*sum(tx_wide$estimate_mhi,
+                                            na.rm = T)) 
+
+## Bringing everything back together: 
+pwsid_mhi_df <- pwsid_mhi %>%
+  as.data.frame() %>%
+  select(-geom)
+
+pwsid_hh_df <- pwsid_hh %>%
+  as.data.frame() %>%
+  select(-geom)
+
+# all census data: 
+all_census <- pw_inter_pop %>%
+  left_join(pwsid_mhi_df) %>%
+  left_join(pwsid_hh_df)
+
+# filtering NAs for tier 1: 
+pw <- all_census %>%
+  filter(!(is.na(estimate_total_pop) | estimate_total_pop == 0)) %>%
+  mutate(tier_crosswalk = "tier_1")
+
+# calculating percentages: 
+pw_per <- pw %>%
+  as.data.frame() %>%
+  select(-geom) %>%
+  select(starts_with(c("estimate", "pwsid"))) %>%
+  mutate_at(vars(!c("estimate_total_pop", "estimate_mhi", "pwsid", 
+                    "estimate_hh_total", "estimate_hh_below_pov", 
+                    "estimate_laborforce", "estimate_laborforce_unemployed", 
+                    "estimate_hh_below_pov_per")), 
+            ~((./estimate_total_pop)*100)) %>%
+  relocate("pwsid") %>%
+  select(-c(estimate_hh_below_pov_per, estimate_hh_below_pov, 
+            estimate_mhi, estimate_total_pop, 
+            estimate_laborforce_unemployed, estimate_hh_total))
+  # mutate(estimate_poc_alone = (100 - estimate_white_alone)) 
+colnames(pw_per) <- paste0(colnames(pw_per), "_per")
+
+# merging percentages back with original counts and organizing columns: 
+pw_final <- merge(pw, pw_per,
+                  by.x = "pwsid", by.y = "pwsid_per") %>%
+  # recalculating % households in poverty and % labor force unemployed
+  mutate(estimate_hh_below_pov_per = (estimate_hh_below_pov/estimate_hh_total*100), 
+         estimate_laborforce_unemployed_per = (estimate_laborforce_unemployed/estimate_laborforce)*100) %>%
+  relocate(tier_crosswalk, .after = pwsid) %>%
+  relocate(estimate_laborforce_unemployed_per, .after = estimate_other_lang_per) %>%
+  relocate(estimate_hh_below_pov_per, .after = estimate_laborforce_unemployed_per) %>%
+  relocate(estimate_laborforce:estimate_laborforce_unemployed, .after = estimate_other_lang)
+
+################################################################################
+## Tier 2: crosswalking 
+################################################################################
+# locating the pwsids that fell out of pw interpolation: 
+xwalk <- all_census %>%
+  filter(is.na(estimate_total_pop) | estimate_total_pop == 0) 
+
+# data prep: 
+pwsid_cross <- tract_crosswalk %>%
+  filter(pwsid %in% xwalk$pwsid) 
+ 
+tx_wide_cross <- tx_wide %>%
+  select(GEOID, estimate_total_pop:estimate_other_lang)
+
+
+# merging tx census stats with crosswalk: 
+pwsid_xwalk <- merge(tx_wide_cross, pwsid_cross, 
+                      by.x = "GEOID", by.y = "tract_geoid", all.y = T)
+
+# multiplying census stats by tract weights:
+pwsid_weight_xwalk <- pwsid_xwalk %>% 
   mutate(across(estimate_total_pop:estimate_hh_below_pov, ~.*tract_parcel_weight)) %>%
   mutate(across(estimate_laborforce:estimate_other_lang, ~.*tract_parcel_weight))
 
-# sum across pwsid, rounding to control for decimal places, and estimate mhi 
-# using a weighted mean: 
-sab_census_crosswalked <- sab_cross_census_weight %>%
+# sum across pwsid and estimate mhi using a weighted mean: 
+pwsid_weighted_xwalk <- pwsid_weight_xwalk %>%
   group_by(pwsid) %>% 
-    summarize(across(estimate_total_pop:estimate_hh_below_pov, ~round(sum(.), 2)), 
-              estimate_mhi = weighted.mean(estimate_mhi, tract_parcel_weight, na.rm = TRUE), 
-              across(estimate_laborforce:estimate_other_lang, ~round(sum(.), 2))) 
+  summarize(across(estimate_total_pop:estimate_hh_below_pov, ~round(sum(.), 2)), 
+            estimate_mhi = weighted.mean(estimate_mhi, tract_parcel_weight, na.rm = TRUE), 
+            across(estimate_laborforce:estimate_other_lang, ~round(sum(.), 2))) 
+
 
 # calculating percentage: 
-sab_census_per <- sab_census_crosswalked %>%
-  as.data.frame(.) %>%
+pwsid_weighted_per <- pwsid_weighted_xwalk %>%
+  as.data.frame() %>%
+  select(-geometry) %>%
   select(starts_with(c("estimate", "pwsid"))) %>%
-  # leaving out columns that shouldn't be divided: 
   mutate_at(vars(!c("estimate_total_pop", "estimate_mhi", "pwsid")), 
             ~((./estimate_total_pop)*100)) %>%
-  relocate("pwsid") %>%
-  mutate(estimate_poc_alone = (100 - estimate_white_alone)) 
-colnames(sab_census_per) <- paste0(colnames(sab_census_per), "_per")
+  relocate("pwsid") 
+  # mutate(estimate_poc_alone = (100 - estimate_white_alone)) 
+colnames(pwsid_weighted_per) <- paste0(colnames(pwsid_weighted_per), "_per")
 
-# merging this back so we have the original census numbers as well:  
-sab_census <- merge(sab_census_crosswalked, sab_census_per,
-                    by.x = "pwsid", by.y = "pwsid_per") %>%
+# merging percentages back with original counts: 
+pwsid_xwalked <- merge(pwsid_weighted_xwalk, pwsid_weighted_per,
+                       by.x = "pwsid", by.y = "pwsid_per") %>%
   select(-c("estimate_total_pop_per", "estimate_mhi_per")) %>%
-  # removing columns where percentages don't actually mean anything
-  # i.e., total number of households or labor force 
   select(-c("estimate_hh_total_per")) %>%
   # recalculating % households in poverty and % labor force unemployed
   mutate(estimate_hh_below_pov_per = (estimate_hh_below_pov/estimate_hh_total*100), 
          estimate_laborforce_unemployed_per = (estimate_laborforce_unemployed/estimate_laborforce)*100)
 
-# combining to service area boundary dataset: 
-sab_tidy <- all_tx_sabs
-sab_census <- merge(sab_tidy, as.data.frame(sab_census), 
-                    by = "pwsid", all.x = T)
+
+# want to cap max total pop to those reported by SDWIS: 
+sdwis_pop <- tx_sabs %>%
+  as.data.frame() %>%
+  select(-geom) %>%
+  select(pwsid, population_served_count)
+
+sdwis_xwalk <- pwsid_xwalked %>%
+  left_join(sdwis_pop) %>%
+  relocate(population_served_count, .before = estimate_total_pop) 
+  
+# capping max pop at SDWIS values: 
+sdwis_pop <- sdwis_xwalk %>%
+  filter(estimate_total_pop > population_served_count) 
+
+sdwis_counts <- sdwis_pop %>%
+  as.data.frame() %>%
+  select(-geometry) %>%
+  pivot_longer(., estimate_white_alone_per:estimate_other_lang_per) %>%
+  select(pwsid, population_served_count, estimate_total_pop, name, value) %>%
+  mutate(raw_count = (value/100) * population_served_count, 
+         col_name = gsub("_per", "", name)) %>%
+  select(pwsid, population_served_count, estimate_total_pop, raw_count, col_name) %>%
+  pivot_wider(., names_from = col_name, values_from = raw_count) %>%
+  mutate(estimate_total_pop = population_served_count,
+         # we can no longer estimate number of households using this method
+         estimate_hh_total = NA,
+         tier_crosswalk = "tier_2_sdiwspop")
+
+# combining this back with percentages: 
+sdwis_per <- sdwis_pop %>% 
+  select(pwsid, estimate_mhi, 
+         estimate_white_alone_per:estimate_other_lang_per) 
+
+sdwis_pop_final <- merge(sdwis_counts, sdwis_per, by = "pwsid")
 
 
-# creating a flag for when the county is within East TX: 
-# TODO: ask funders which pwsids they care about - some are fairly close to the 
-# border 
-east_tx <- read.csv("./data/raw/east_TX_counties.csv") %>%
-  select(-X) %>%
-  mutate(county_tidy = paste0(county_name, " County"))
-# running an intersection with east TX geography
-east_tx_geo <- census_tidy %>%
-  filter(counties %in% east_tx$county_tidy) %>%
-  filter(state == "Texas") %>%
-  st_union()
-east_tx_sabs <- st_intersection(sab_census, east_tx_geo)
-east_tx_pwsids <- unique(east_tx_sabs$pwsid)
-# creating flag: 
-sab_census_flag <- sab_census %>%
-  mutate(east_tx_flag = case_when(
-    pwsid %in% east_tx_pwsids ~ "yes",
-    TRUE ~ "no")
-  ) %>%
-  relocate(east_tx_flag, .after = "county_served")
+# recombining with other pwsids where xwalk < SDWIS: 
+xwalk_pop <-  sdwis_xwalk %>%
+  filter(estimate_total_pop < population_served_count) %>%
+  mutate(tier_crosswalk = "tier_2_xwalkpop")
+
+sdwis_pop_final <- sdwis_pop_final[, names(xwalk_pop)]
+
+final_xwalk <- rbind(sdwis_pop_final, xwalk_pop) %>%
+  select(-population_served_count) %>%
+  mutate(mhi_percent_uni = NA) %>%
+  st_as_sf() %>%
+  st_transform(., st_crs(pw))
+
+
+################################################################################
+## Combining tier 1 and 2 methods & tier 3 designation: 
+################################################################################
+final_xwalk <- final_xwalk[, names(pw_final)]
+final_pw_xwalk <- rbind(pw_final, final_xwalk)
+
+# just need to combine with missing pwsids, with NAs for all columns 
+missing <- sab_flag %>%
+  filter(!(pwsid %in% final_pw_xwalk$pwsid))
+
+# adding these back in, but as tier 3: 
+missing_df <- final_pw_xwalk[nrow(final_pw_xwalk)+1:nrow(missing),] 
+missing_df$pwsid <- missing$pwsid 
+missing_df <- missing_df %>%
+  as.data.frame() %>%
+  select(-geometry) %>%
+  mutate(tier_crosswalk = "tier_3")
+
+# adding back geometries 
+missing_sab_geoms <- missing %>%
+  select(pwsid)
+
+missing_sf <- missing_df %>%
+  left_join(missing_sab_geoms) %>%
+  st_as_sf() %>%
+  st_transform(., crs = st_crs(final_pw_xwalk))
+
+# completing crosswalk: 
+complete_crosswalk <- rbind(final_pw_xwalk, missing_sf)
+complete_crosswalk_df <- complete_crosswalk %>% 
+  mutate(estimate_poc_alone_per = 100 - estimate_white_alone_per) %>%
+  relocate(estimate_poc_alone_per, .after = estimate_mixed_alone_per) %>%
+  as.data.frame() %>%
+  select(-c(geometry, mhi_percent_uni))
+
+# merge back with sab information: 
+final_sab <- merge(sab_flag, complete_crosswalk_df, 
+                   by = "pwsid")
 
 # SAB & Census - writing this to s3: 
 tmp <- tempfile()
-st_write(sab_census_flag, dsn = paste0(tmp, ".geojson"))
+st_write(final_sab, dsn = paste0(tmp, ".geojson"))
 on.exit(unlink(tmp))
 put_object(
   file = paste0(tmp, ".geojson"),

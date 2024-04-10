@@ -1,7 +1,7 @@
 ---
 title: "TX Drinking Water Data Merging"
 author: "EmmaLi Tsai"
-date: "2024-02-15"
+date: "2024-04-10"
 output: html_document
 ---
 
@@ -42,7 +42,7 @@ census <- tidycensus::get_acs(
   geography = "tract", 
   variables = census_vars, 
   state = "TX", 
-  year = 2021,
+  year = 2020,
   geometry = TRUE
 )
 
