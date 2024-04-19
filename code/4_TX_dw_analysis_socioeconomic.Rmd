@@ -947,7 +947,8 @@ aff_analysis <- merge(aff_TX, analysis_keys, by = "pwsid")
 # what does hcf look like spatially? 
 aff_analysis_sf <- aff_analysis %>%
   st_as_sf() %>%
-  st_transform('+proj=longlat +datum=WGS84')
+  st_transform('+proj=longlat +datum=WGS84') %>%
+  filter(east_tx_flag == "yes")
 
 # mapping household cost factor across TX: 
 hcf_pal <- colorNumeric(
@@ -979,7 +980,8 @@ water_rate_pal <- colorNumeric(
 
 # boundaries of all sabs: 
 sabs <- demo$census %>%
-  st_transform('+proj=longlat +datum=WGS84' )
+  st_transform('+proj=longlat +datum=WGS84') %>%
+  filter(east_tx_flag == "yes")
 
 leaflet() %>%
   addProviderTiles(providers$CartoDB.VoyagerNoLabels, group = "Toner Lite") %>%
@@ -997,7 +999,7 @@ leaflet() %>%
   addLegend("bottomright",
             pal = water_rate_pal,
             values = aff_analysis_sf$total_water,
-            title = "Annual Water Rate (Water + Sewer; $)",
+            title = "Annual Water Rate ($)",
             opacity = 1)
 
 
@@ -1189,8 +1191,10 @@ lqi_hcf <- aff %>%
   filter(east_tx_flag == "yes")
 
 ggplot(lqi_hcf, aes(x = estimate_mhi, y = total_water_year + total_sewer_year)) + 
-  geom_point(aes(color = hcf)) + 
+  geom_point(aes(color = hcf, 
+                 size = estimate_poc_alone_per)) + 
   scale_color_continuous(name = "HCF") + 
+  scale_size_continuous(name = "% POC") + 
   theme_minimal() + 
   labs(x = "Annual Median Household Income", 
        y = "Annual Total Household Water Cost") + 
@@ -1846,27 +1850,49 @@ all_data <- census %>%
 all_cor <- cor(all_data %>% 
                  select(c(healthbased_violations_5yr,
                           paperwork_violations_5yr, 
-                          paperwork_violations_10yr,
                           healthbased_violations_10yr,
-                          area_miles, pop_density, estimate_mhi, 
-                          estimate_laborforce_unemployed, 
-                          estimate_no_school_per:estimate_prof_degree_per,
+                          paperwork_violations_10yr,
+                          area_miles, pop_density, 
+                          service_connections_count,
+                          estimate_mhi, 
                           estimate_hh_below_pov_per,
+                          estimate_laborforce_unemployed, 
+                          estimate_no_school_per, 
+                          estimate_high_school_per,
+                          estimate_only_english_per,
                           estimate_foreign_per,
-                          estimate_poc_alone_per, 
-                          service_connections_count)) %>% 
-                          rename_with(~ str_remove(., "_alone_per"), everything()) %>%
-                          rename_with(~ str_remove(., "_per"), everything()) %>%
-                          rename_with(~ str_remove(., "estimate"), everything()) %>%
-                          rename_with(~ str_remove(., "_"), everything()), 
+                          estimate_hisp_alone_per,
+                          estimate_poc_alone_per)) %>% 
+                 rename_with(~ str_remove(., "_alone_per"),
+                             everything()) %>%
+                          rename_with(~ str_remove(., "_per"), 
+                                      everything()) %>%
+                          rename_with(~ str_remove(., "estimate"),
+                                      everything()) %>%
+                          rename_with(~ str_remove(., "_"), 
+                                      everything()), 
                use = "pairwise.complete.obs") 
+
+
+name_changes <- c("Health Viols, 5yr", "Non-Health Viols, 5yr", 
+                      "Health Viols, 10yr",  "Non-Helath Viols, 10yr", 
+                       "Area (mi)", "Population Density", 
+                       "Service Connections", 
+                       "MHI", "% Households in Poverty", 
+                       "% Unemployment", "% No Schooling", 
+                       "% Highschool", "% Only Speak English",
+                       "% Immigrant", "% Latino/a", "% POC")
+
+rownames(all_cor) <- name_changes
+colnames(all_cor) <- name_changes
 
 cor_pvals <- cor.mtest(all_cor, conf.level = 0.95)
 cor_pvals$p
 
 corrplot(all_cor, method = 'ellipse', type = 'upper', 
-        p.mat = cor_pvals$p, insig = "p-value", sig.level = -1, 
-        mar=c(0,0,0,0), 
-          tl.col = "black")
+         p.mat = cor_pvals$p, insig = "p-value", sig.level = -1, 
+         mar=c(0,0,0,0), 
+         tl.col = "black", 
+         number.cex = 0.2)
 ```
 

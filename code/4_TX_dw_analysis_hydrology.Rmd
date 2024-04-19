@@ -703,7 +703,7 @@ top_viol <- etx_viols %>%
   st_as_sf() %>%
   st_transform('+proj=longlat +datum=WGS84' )
 
-# mapping CVI:
+# mapping violations:
 viol_pal <- colorFactor(
   palette = viridis::viridis(9),
   domain = top_viol$viol_cont)
@@ -717,11 +717,44 @@ leaflet() %>%
               fillColor = ~viol_pal(viol_cont),
               weight = 1,
               label = paste0("pwsid: ", top_viol$pwsid,
-                "; top viol & cont: ", top_viol$viol_cont, 2)) %>%
+                "; top viol & cont: ", top_viol$viol_cont)) %>%
   addLegend("bottomright",
             pal = viol_pal,
             values = top_viol$viol_cont,
-            title = "Viol & Cont")
+            title = "Most Common Contaminant")
+
+
+# are there any relationships between primary water source 
+# and types of violations? 
+source <- demo$census %>% 
+  select(pwsid, primary_source_code) %>%
+  as.data.frame() %>%
+  select(-geometry)
+
+source_summary <- demo$census %>%
+  as.data.frame() %>%
+  select(-geometry) %>%
+  group_by(primary_source_code) %>%
+  summarize(total_pulling = length(unique(pwsid)))
+
+top_viol_source <- top_viol %>%
+  as.data.frame() %>%
+  select(-geometry) %>%
+  left_join(source) %>%
+  group_by(viol_cont, primary_source_code) %>%
+  summarize(total_pwsids = length(unique(pwsid))) %>%
+  left_join(source_summary, by = "primary_source_code") %>%
+  mutate(total_pct = 100*(total_pwsids / total_pulling))
+
+ggplot(top_viol_source, aes(x = viol_cont, y = total_pct, 
+                            color = primary_source_code)) + 
+  geom_point(size = 4, alpha = 0.7) + 
+  coord_flip() + 
+  theme_minimal() + 
+  labs(y = "% of Utilities Pulling from Primay Source", 
+       x = "Top Violation and Contaminant") + 
+  scale_color_discrete(name = "Water Source")
+
 
 ```
 
@@ -729,13 +762,14 @@ leaflet() %>%
 ```{r}
 # grabbing water shortages and analysis keys: 
 shortages <- wds$water_restrictions
-analysis_keys <- keys$analysis_keys
+analysis_keys <- keys$analysis_keys %>%
+  st_transform('+proj=longlat +datum=WGS84') 
 
 # merging shortage information with key stats: 
 pwsid_shortages <- merge(analysis_keys, shortages, by = "pwsid", 
                          all.y = TRUE) %>%
   st_as_sf() %>%
-  st_transform(., crs = st_crs(analysis_keys)) %>%
+  st_transform('+proj=longlat +datum=WGS84') %>%
   filter(!st_is_empty(.))
 
 # mapping to see where these 2023 shortages are located: 
@@ -765,10 +799,10 @@ east_tx_shortages <- pwsid_shortages %>%
 
 # what are the characteristics of communities on a short water
 # notice? 
-pwsid_shortages %>%
+etx_short <- pwsid_shortages %>%
   filter(east_tx_flag == "yes") %>%
   summarize(mean_poc = mean(estimate_poc_alone_per), 
-            mean_mhi = mean(estimate_mhi), 
+            mean_mhi = mean(estimate_mhi, na.rm = T), 
             mean_hbv_5 = mean(healthbased_violations_5yr), 
             mean_hbv_10 = mean(healthbased_violations_10yr), 
             mean_pw_5 = mean(paperwork_violations_5yr), 
@@ -783,9 +817,6 @@ analysis_keys %>%
             mean_hbv_10 = mean(healthbased_violations_10yr), 
             mean_pw_5 = mean(paperwork_violations_5yr), 
             mean_pw_10 = mean(paperwork_violations_10yr))
-
-# would love to plot by most common violation by utility: 
-
 ```
 
 ## What is the proximity to water-realted hazards? 
@@ -802,7 +833,7 @@ etx_pwsids <- analysis_keys %>%
   as.data.frame() %>%
   distinct(pwsid)
 
-# Superfunpwsid_shortages# Superfund sites (NPL), risk management plan (RMP) proximity, 
+# Superfund sites (NPL), risk management plan (RMP) proximity, 
 # haz waste (TSDF and LQGs) proximity, underground storage tanks (UST), 
 # and waste water discharges indicator 
 water_haz <- ejscreen %>%
@@ -847,19 +878,47 @@ interpolate <- areal::aw_interpolate(census_sf, tid="pwsid",
 
 # what's the relationship between these distances and violations? 
 ej_haz_long <- pivot_longer(interpolate, haz_waste:waste_discharge) %>%
-  left_join(analysis_keys)
+  left_join(analysis_keys) %>%
+  filter(east_tx_flag == "yes")
 ej_haz_long$name <- as.factor(ej_haz_long$name)
 levels(ej_haz_long$name) <- c("Haz Waste", "RMP", 
                               "Storage Tanks", "Superfund", 
                               "Waste Discharge")
 ggplot(ej_haz_long, aes(x = value, 
-                        y = healthbased_violations_5yr, 
-                        color = estimate_poc_alone_per)) + 
-  geom_point() + 
+                        y = estimate_poc_alone_per)) + 
+                        # y = heatlhbased_violations_5yr, 
+                        # color = estimate_poc_alone_per)) + 
+  geom_point(alpha = 0.5) + 
+  geom_point(data = ej_haz_long %>% filter(healthbased_violations_10yr > 0),
+             color = "red", alpha = 0.5) +
+  # geom_smooth(data = ej_haz_long %>% filter(healthbased_violations_5yr > 0),
+  #            color = "red", alpha = 0.5) +
   facet_wrap(~name, scales = "free") + 
   theme_minimal() + 
-  scale_color_continuous(name = "%POC") + 
-  labs(x = "Distance to Hazard", y = "Health-based Violations, 5yr")
+  # scale_color_continuous(name = "%POC") + 
+  labs(x = "Distance to Hazard", y = "%POC")
+
+# grabbing summary stats to reflect this: 
+interpolate %>%
+  as.data.frame() %>%
+  select(-geometry) %>%
+  left_join(keys$analysis_keys) %>%
+  filter(east_tx_flag == "yes") %>%
+  mutate(dist_bin = cut(waste_discharge, 
+                       breaks = c(quantile(waste_discharge, 
+                                           probs = seq(0, 1, by = 0.20), 
+                                           na.rm = TRUE)), 
+                       include.lowest = TRUE)) %>%
+  group_by(dist_bin) %>%
+  summarize(total_utilities = n(),
+            paperwork_10yr = mean(paperwork_violations_10yr), 
+            paperwork_5yr = mean(paperwork_violations_5yr), 
+            health_10yr = mean(healthbased_violations_10yr), 
+            health_5yr = mean(healthbased_violations_5yr), 
+            mean_mhi = mean(estimate_mhi, na.rm = T), 
+            mean_poc = mean(estimate_poc_alone_per, na.rm = T)) %>%
+  mutate(quantile = c("0-20","20-40","40-60","60-80","80-100", "NA")) %>%
+  relocate(quantile, .after = dist_bin)
 
 
 # what about general mean distance to a hazard? 
@@ -897,11 +956,123 @@ leaflet() %>%
             values = ej_summary$mean_weighed_all,
             title = "Mean Prox to Water Hazards",
             opacity = 1)
+
+
+# are these proximities significantly correlated with anything? 
+viols_data <- keys$analysis_keys %>%
+  select(pwsid, paperwork_violations_10yr, healthbased_violations_10yr, 
+         paperwork_violations_5yr, healthbased_violations_5yr) %>%
+  as.data.frame() %>%
+  select(-geometry)
+
+corr_ejhaz <- interpolate %>%
+  as.data.frame() %>%
+  select(-geometry) %>%
+  left_join(demo$census, by = "pwsid") %>%
+  left_join(viols_data, by = "pwsid") %>%
+  filter(east_tx_flag == "yes")
+
+all_cor <- cor(corr_ejhaz %>% 
+                 select(c(healthbased_violations_5yr,
+                          paperwork_violations_5yr, 
+                          healthbased_violations_10yr,
+                          paperwork_violations_10yr,
+                          haz_waste,
+                          rmp, 
+                          storage_tanks, 
+                          superfund,
+                          waste_discharge,
+                          # area_miles, pop_density,
+                          # service_connections_count,
+                          estimate_mhi, 
+                          estimate_hh_below_pov_per,
+                          estimate_laborforce_unemployed,
+                          estimate_no_school_per,
+                          # estimate_high_school_per,
+                          estimate_only_english_per,
+                          estimate_foreign_per,
+                          estimate_hisp_alone_per,
+                          estimate_poc_alone_per)) %>% 
+                 rename_with(~ str_remove(., "_alone_per"),
+                             everything()) %>%
+                          rename_with(~ str_remove(., "_per"), 
+                                      everything()) %>%
+                          rename_with(~ str_remove(., "estimate"),
+                                      everything()) %>%
+                          rename_with(~ str_remove(., "_"), 
+                                      everything()), 
+               use = "pairwise.complete.obs") 
+
+name_changes <- c("Health Viols, 5yr", "Non-Health Viols, 5yr", 
+                  "Health Viols, 10yr",  "Non-Health Viols, 10yr", 
+                  "Haz Waste", "RMP", "Storage Tanks", "Superfund", 
+                  "Waste Discharge",
+                  "MHI", "% Households in Poverty", 
+                  "% Unemployment", "% No Schooling", 
+                  "% Only Speak English",
+                  "% Immigrant", "% Latino/a", "% POC")
+
+rownames(all_cor) <- name_changes
+colnames(all_cor) <- name_changes
+
+cor_pvals <- cor.mtest(all_cor, conf.level = 0.95)
+cor_pvals$p
+
+corrplot(all_cor, method = 'ellipse', type = 'upper', 
+         p.mat = cor_pvals$p, insig = "p-value", sig.level = -1, 
+         mar=c(0,0,0,0), 
+         tl.col = "black")
+
 ```
 
 ## How many boil water notices have there been over the past five years?
 ```{r}
-# don't have this data yet - need to be FOIA'd
+bwn_f1 <- wds$bwn_f1 %>%
+  rename(pwsid = wsid)
+bwn_f2 <- wds$bwn_f2 %>%
+  rename(pwsid = pws_id)
+
+# combining with key vars: 
+key_vars <- keys$analysis_keys
+
+pws_bwn <- key_vars %>%
+  left_join(bwn_f2, by = "pwsid") %>%
+  filter(east_tx_flag == "yes")
+
+# grouping and summarizing: 
+pws_summary <- pws_bwn %>%
+  group_by(pwsid) %>%
+  summarize(total = length(unique(updtts))) %>%
+  st_transform('+proj=longlat +datum=WGS84')
+
+etx_sabs <- demo$census %>%
+  filter(east_tx_flag == "yes") %>%
+  st_transform('+proj=longlat +datum=WGS84')
+
+# mapping number of bwn:
+bwn_pal <- colorNumeric(
+  palette = viridis::inferno(9),
+  domain = pws_summary$total)
+
+leaflet() %>%
+  addProviderTiles(providers$CartoDB.VoyagerNoLabels, group = "Toner Lite") %>%
+   addPolygons(data = etx_sabs,
+              opacity = 0.8,
+              color = "grey", 
+              weight = 1) %>%
+  addPolygons(data = pws_summary,
+              fillOpacity = 0.9,
+              stroke = TRUE,
+              color = "black",
+              fillColor = ~bwn_pal(total),
+              weight = 1,
+              label = paste0("pwsid: ", pws_summary$pwsid,
+                             "; bwn: ", pws_summary$total)) %>%
+  addLegend("bottomright",
+            pal = bwn_pal,
+            values = pws_summary$total,
+            title = "BWN",
+            opacity = 1)
 ```
 
 ## Have there been any enforcement actions?
@@ -1712,17 +1883,29 @@ tx_pop <- sum(demo$census$estimate_total_pop, na.rm = T)
 etx_pop <- demo$census %>% 
   filter(east_tx_flag == "yes") %>%
   summarize(total_pop = sum(estimate_total_pop, na.rm = T))
-pop_source <- demo$census %>%
+
+pop_source_tx <- demo$census %>%
   as.data.frame() %>%
   select(-geometry) %>%
-  group_by(primary_source_code, east_tx_flag) %>%
-  summarize(pop_served = sum(estimate_total_pop, na.rm = T)) %>%
-  mutate(percent_pop = 
-           case_when(east_tx_flag == "no" ~ (pop_served / tx_pop)*100, 
-                     east_tx_flag == "yes" ~ (pop_served / etx_pop$total_pop)*100))
+  group_by(primary_source_code) %>%
+  summarize(total_sabs = length(unique(pwsid)),
+            pop_served = sum(estimate_total_pop, na.rm = T)) %>%
+  mutate(percent_pop = 100*(pop_served/tx_pop), 
+         flag = "TX") 
+
+pop_source_etx <- demo$census %>%
+  as.data.frame() %>%
+  select(-geometry) %>%
+    filter(east_tx_flag == "yes") %>%
+  group_by(primary_source_code) %>%
+  summarize(total_sabs = length(unique(pwsid)),
+            pop_served = sum(estimate_total_pop, na.rm = T)) %>%
+  mutate(percent_pop = 100*(pop_served/etx_pop$total_pop),
+         flag = "East TX")
 
 # investigating whether east TX source breakdown is similar: 
-pop_source_plot <- demo$census 
+pop_source_plot <- demo$census %>%
+  filter(east_tx_flag == "yes")
 ggplot(pop_source_plot, aes(x = primary_source_code, 
                             y = estimate_total_pop, 
                             color = primary_source_code)) + 
@@ -1732,6 +1915,23 @@ ggplot(pop_source_plot, aes(x = primary_source_code,
   theme_minimal() + 
   theme(legend.position = "none") + 
   labs(x = "",  y = "Estimated Population Served")
+
+# creating a viz to go along with this: 
+all_source <- rbind(pop_source_tx, pop_source_etx) %>%
+  mutate(primary_source_code = as.factor(primary_source_code))
+
+levels(all_source$primary_source_code) <- c("Groundwater, UI", "Groundwater",
+                                            "Groundwater, Purchased", 
+                                            "Surface Water", 
+                                            "Surface Water, Purchased")
+
+ggplot(all_source, aes(x = primary_source_code, y = total_sabs, 
+                          fill = flag)) + 
+  ggchicklet::geom_chicklet(stat = "identity", alpha = 0.5) + 
+  scale_fill_discrete(name = "") + 
+  theme_minimal() + 
+  labs(x = "Primary Water Source", y = "Total Service Areas") + 
+  coord_flip()
 
 ###############################################################################
 # investigating ground water: 
@@ -1894,31 +2094,44 @@ basins <- enviro_sw$major_river_basins %>%
   st_transform('+proj=longlat +datum=WGS84') %>%
   filter(basin_name %in% sw_imp_basins$basin_name_short)
 
+# fixing where names didn't match: 
+imp_basin_pct <- imp_basin %>%
+  select(imp_basin_names, pct_impaired)
+basins_pct <- merge(basins, imp_basin_pct, 
+                by.x = "basin_name", 
+                by.y = "imp_basin_names", all.x = T) %>%
+  mutate(pct_impaired.y = 
+         case_when(basin_name == "Cypress" ~ 49.41870, 
+                   basin_name == "Neches-Trinity" ~ 67.12968, 
+                   TRUE ~ pct_impaired.y)) %>%
+  mutate(pct_impaired.y = round(basins_pct$pct_impaired.y, 1))
+
 # mapping these: 
 basin_pal <- colorFactor(
-  palette = viridis::inferno(9),
+  palette = c("black", "red"),
   domain = etx_pwsid_sw_basins$violation_flag)
 
 real_basin <- colorFactor(
-  palette = viridis::viridis(12),
-  domain = basins$basin_name)
+  palette = viridis::inferno(6),
+  domain = basins_pct$pct_impaired.y)
 
 leaflet() %>%
   addProviderTiles(providers$CartoDB.VoyagerNoLabels, group = "Toner Lite") %>%
-  addPolygons(data = basins,
+  addPolygons(data = basins_pct,
               opacity = 0.1,
               # stroke = TRUE,
               # color = "black",
-              color = ~real_basin(basin_name),
-              weight = 1) %>%
+              color = ~real_basin(pct_impaired.y),
+              weight = 1, 
+              label = paste0("% imp: ", basins_pct$pct_impaired.y)) %>%
   addPolygons(data = sw_imp_basins,
-              fillOpacity = 0.8,
-              stroke = TRUE,
-              color = "black",
-              fillColor = ~basin_pal(violation_flag),
+              opacity = 0.8,
+              # stroke = TRUE,
+              # color = "black",
+              color = ~basin_pal(violation_flag),
               weight = 1,
               label = paste0("pwsid: ", sw_imp_basins$pwsid,
-                "; cvi: ", sw_imp_basins$violation_flag)) %>%
+                "; viols: ", sw_imp_basins$violation_flag)) %>%
   addLegend("bottomright",
             pal = basin_pal,
             values = sw_imp_basins$violation_flag,
@@ -1926,8 +2139,8 @@ leaflet() %>%
             opacity = 1) %>%
   addLegend("bottomright",
             pal = real_basin,
-            values = basins$basin_name,
-            title = "Basin Name", 
+            values = basins_pct$pct_impaired.y,
+            title = "% Impaired", 
             opacity = 1) 
 
 
@@ -2029,8 +2242,7 @@ res_summary <- sw_intakes %>%
   group_by(res_name) %>%
   summarize(total = length(unique(pwsid)), 
             mean_5yr_hbv = mean(healthbased_violations_5yr))
-
-census <- demo$census %>% filter(east_tx_flag == "yes")
+# not really - sample size too small 
 ```
 
 

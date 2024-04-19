@@ -396,6 +396,16 @@ for(i in 1:nrow(tx_water_restrictions)){
 }
 
 
+## TX Boil Water Notices - via FOIA 
+# Received from TCEQ on 4/17/2024
+bwn_f1 <- aws.s3::s3read_using(read_excel, 
+                                      object = "s3://tech-team-data/state-drinking-water/TX/raw/TX_BWN/TX_bwn_detailed_f1.xlsx") %>%
+  janitor::clean_names()
+bwn_f2 <- aws.s3::s3read_using(read_excel, 
+                                      object = "s3://tech-team-data/state-drinking-water/TX/raw/TX_BWN/TX_bwn_simple_f2.xlsx") %>%
+  janitor::clean_names()
+
+
 # throwing this into a list: 
 TX_water_delivery <- list()
 TX_water_delivery[[1]] <- sdwis
@@ -408,12 +418,15 @@ TX_water_delivery[[7]] <- demands
 TX_water_delivery[[8]] <- supp
 TX_water_delivery[[9]] <- needs
 TX_water_delivery[[10]] <- strat
+TX_water_delivery[[11]] <- bwn_f1
+TX_water_delivery[[12]] <- bwn_f2
 
 names(TX_water_delivery) <- c("sdwis", "tceq_viols",
                               "historic_use_estimates",
                               "water_loss", "water_restrictions",
                               "TXSWP_pop", "TXSWP_demands",
-                              "TXSWP_supp", "TXSWP_needs", "TXSWP_strat")
+                              "TXSWP_supp", "TXSWP_needs", "TXSWP_strat", 
+                              "bwn_f1", "bwn_f2")
 
 saveRDS(TX_water_delivery, file="./data/raw/TX_water_delivery_list.RData")
 put_object(
