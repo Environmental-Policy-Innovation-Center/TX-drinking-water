@@ -169,7 +169,7 @@ county_needs <- needs %>%
   filter(wug_type == "MUNICIPAL") %>%
   filter(decade == "2070") %>% 
   group_by(wug_county) %>%
-  summarize(mean_needs = sum(needs))  %>%
+  summarize(sum_needs = sum(needs))  %>%
   left_join(counties) %>%
   st_as_sf() %>%
   st_transform(., crs = st_crs(census))
@@ -177,20 +177,20 @@ county_needs <- needs %>%
 # plotting to see projected population change by county: 
 needs_pal <- colorNumeric(
   palette = viridis::viridis(8),
-  domain = county_needs$mean_needs)
+  domain = county_needs$sum_needs)
 
 leaflet() %>%
   addProviderTiles(providers$CartoDB.VoyagerNoLabels,
                    group = "Toner Lite") %>%
   addPolygons(data = county_needs,
               opacity = 9,
-              color = ~needs_pal(mean_needs),
+              color = ~needs_pal(sum_needs),
               weight = 1,
               label = paste0("county: ", county_needs$wug_county,
-                "; net needs: ", round(county_needs$mean_needs, 2))) %>%
+                "; net needs: ", round(county_needs$sum_needs, 2))) %>%
   addLegend("bottomright",
             pal = needs_pal,
-            values = county_needs$mean_needs,
+            values = county_needs$sum_needs,
             title = "Water Needs (2070)",
             opacity = 1)
 
@@ -199,15 +199,15 @@ proj_needs <- wds$TXSWP_needs
 proj_needs <- proj_needs %>%
   group_by(wug_county) %>%
   filter(wug_type == "MUNICIPAL") %>%
-  summarize(mean_n2020 = sum(n2020), 
-            mean_n2070 = sum(n2070)) 
-proj_needs <- proj_needs[order(proj_needs$mean_n2070, decreasing = TRUE), ]
+  summarize(sum_n2020 = sum(n2020), 
+            sum_n2070 = sum(n2070)) 
+proj_needs <- proj_needs[order(proj_needs$sum_n2070, decreasing = TRUE), ]
 top_counties <- proj_needs[1:50,]$wug_county
 
 ggplot(proj_needs %>% filter(wug_county %in% top_counties), 
-       aes(x = reorder(wug_county, -mean_n2070), y = mean_n2070)) + 
+       aes(x = reorder(wug_county, -sum_n2070), y = sum_n2070)) + 
   geom_bar(stat = "identity", fill = "lightblue") + 
-  geom_bar(aes(y = mean_n2020), fill = "pink", stat = "identity") +
+  geom_bar(aes(y = sum_n2020), fill = "pink", stat = "identity") +
   coord_flip() + 
   theme_minimal() + 
   labs(y = "Municipal Water Needs (acre-feet)", x = "County")
@@ -218,15 +218,15 @@ etx_proj_needs <- wds$TXSWP_needs %>%
   group_by(wug_county) %>%
   filter(wug_type == "MUNICIPAL") %>%
   filter(wug_county %in% etx$county_name) %>%
-  summarize(mean_n2020 = sum(n2020), 
-            mean_n2070 = sum(n2070)) 
-etx_proj_needs <- etx_proj_needs[order(etx_proj_needs$mean_n2070, decreasing = TRUE), ]
+  summarize(sum_n2020 = sum(n2020), 
+            sum_n2070 = sum(n2070)) 
+etx_proj_needs <- etx_proj_needs[order(etx_proj_needs$sum_n2070, decreasing = TRUE), ]
 top_counties <- etx_proj_needs[1:20,]$wug_county
 
 ggplot(etx_proj_needs %>% filter(wug_county %in% top_counties), 
-       aes(x = reorder(wug_county, -mean_n2070), y = mean_n2070)) + 
+       aes(x = reorder(wug_county, -sum_n2070), y = sum_n2070)) + 
   geom_bar(stat = "identity", fill = "lightblue") + 
-  geom_bar(aes(y = mean_n2020), fill = "pink", stat = "identity") +
+  geom_bar(aes(y = sum_n2020), fill = "pink", stat = "identity") +
   coord_flip() + 
   theme_minimal() + 
   labs(y = "Municipal Water Needs (acre-feet)", x = "County")
@@ -237,20 +237,20 @@ etx_county_needs <- county_needs %>%
   filter(wug_county %in% etx$county_name) 
 needs_pal <- colorNumeric(
   palette = viridis::viridis(8),
-  domain = etx_county_needs$mean_needs)
+  domain = etx_county_needs$sum_needs)
 
 leaflet() %>%
   addProviderTiles(providers$CartoDB.VoyagerNoLabels,
                    group = "Toner Lite") %>%
   addPolygons(data = etx_county_needs,
               opacity = 9,
-              color = ~needs_pal(mean_needs),
+              color = ~needs_pal(sum_needs),
               weight = 1,
               label = paste0("county: ", etx_county_needs$wug_county,
-                "; net needs: ", round(etx_county_needs$mean_needs, 2))) %>%
+                "; net needs: ", round(etx_county_needs$sum_needs, 2))) %>%
   addLegend("bottomright",
             pal = needs_pal,
-            values = etx_county_needs$mean_needs,
+            values = etx_county_needs$sum_needs,
             title = "Water Needs (2070)",
             opacity = 1)
 
@@ -1005,9 +1005,10 @@ all_cor <- cor(corr_ejhaz %>%
 
 name_changes <- c("Health Viols, 5yr", "Non-Health Viols, 5yr", 
                   "Health Viols, 10yr",  "Non-Health Viols, 10yr", 
-                  "Haz Waste", "RMP", "Storage Tanks", "Superfund", 
+                  "Haz Waste", "Risk Management Plan", 
+                  "Storage Tanks", "Superfund", 
                   "Waste Discharge",
-                  "MHI", "% Households in Poverty", 
+                  "Median Household Income", "% Households in Poverty", 
                   "% Unemployment", "% No Schooling", 
                   "% Only Speak English",
                   "% Immigrant", "% Latino/a", "% POC")
@@ -1018,8 +1019,12 @@ colnames(all_cor) <- name_changes
 cor_pvals <- cor.mtest(all_cor, conf.level = 0.95)
 cor_pvals$p
 
-corrplot(all_cor, method = 'ellipse', type = 'upper', 
-         p.mat = cor_pvals$p, insig = "p-value", sig.level = -1, 
+corrplot(all_cor, method = 'color', type = 'upper', 
+         p.mat = cor_pvals$p, 
+         sig.level = c(0.001, 0.01, 0.05, 0.1), pch.cex = 0.9,
+         insig = 'label_sig', pch.col = 'grey20',
+         # insig = "p-value", 
+         # sig.level = -1, 
          mar=c(0,0,0,0), 
          tl.col = "black")
 
