@@ -1003,9 +1003,9 @@ all_cor <- cor(corr_ejhaz %>%
                                       everything()), 
                use = "pairwise.complete.obs") 
 
-name_changes <- c("Health Viols, 5yr", "Non-Health Viols, 5yr", 
-                  "Health Viols, 10yr",  "Non-Health Viols, 10yr", 
-                  "Haz Waste", "Risk Management Plan", 
+name_changes <- c("Health Violations, 5yr", "Non-Health Violations, 5yr", 
+                  "Health Violations, 10yr",  "Non-Health Violations, 10yr", 
+                  "Hazardous Waste", "Risk Management Plan", 
                   "Storage Tanks", "Superfund", 
                   "Waste Discharge",
                   "Median Household Income", "% Households in Poverty", 
@@ -1021,12 +1021,13 @@ cor_pvals$p
 
 corrplot(all_cor, method = 'color', type = 'upper', 
          p.mat = cor_pvals$p, 
-         sig.level = c(0.001, 0.01, 0.05, 0.1), pch.cex = 0.9,
+         sig.level = c(0.01, 0.05), pch.cex = 0.9,
          insig = 'label_sig', pch.col = 'grey20',
          # insig = "p-value", 
          # sig.level = -1, 
          mar=c(0,0,0,0), 
-         tl.col = "black")
+         tl.col = "black", 
+         diag = FALSE)
 
 ```
 

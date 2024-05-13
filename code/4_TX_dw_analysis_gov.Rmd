@@ -272,6 +272,7 @@ summary_pop <- system %>%
                summarise(estimate_total_pop_sum = sum(estimate_total_pop, na.rm = TRUE), 
                estimate_mhi= mean(estimate_mhi, na.rm = TRUE),
                paperwork_violations_10yr = mean(paperwork_violations_10yr, na.rm = TRUE), 
+               healthbased_violations_5yr = mean(healthbased_violations_5yr, na.rm = TRUE),
                healthbased_violations_10yr = mean(healthbased_violations_10yr, na.rm = TRUE))%>%
                mutate(percent_pop = estimate_total_pop_sum / sum(system$estimate_total_pop, na.rm = TRUE))%>%
                mutate(pop_catagories = fct_reorder(pop_catagories, desc(paperwork_violations_10yr)))

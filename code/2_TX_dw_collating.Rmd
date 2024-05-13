@@ -576,7 +576,8 @@ URL <- "https://docs.google.com/spreadsheets/d/1kUHLdzFjwmKx4r6YTu2qjxwNuuG5JeUi
 dl <- googledrive::drive_download(
   as_id(URL),
   path = 'temp1.xlsx', 
-  type = "xlsx")
+  type = "xlsx", 
+  overwrite = TRUE)
 cwsrf_by_rank <- readxl::read_excel('temp1.xlsx', sheet = "CWSRF By Rank", 
                                         skip = 1, col_names = TRUE) %>%
   janitor::clean_names() %>%
@@ -588,14 +589,24 @@ file.remove("temp1.xlsx")
 TX_DAC <- aws.s3::s3read_using(st_read, 
                                object = "s3://tech-team-data/state-drinking-water/TX/raw/TX_DAC.geojson")
 
+
+## TX DWSRF analyis from Phil & Danielle: 
+raw_link <- "https://raw.githubusercontent.com/Environmental-Policy-Innovation-Center/water_team/reorganize-repo/data/clean_data/dwsrf_awards/dwsrf_awards.csv?token=GHSAT0AAAAAACILGNVKQRQVCXJ33OVCZEV4ZRP4MWA"
+temp_file <- tempfile(fileext = ".csv")
+dw_srf_raw <- GET(raw_link, write_disk(path = temp_file))
+dw_srf <- read.csv(temp_file) %>%
+  janitor::clean_names()
+
 # throwing this into a list: 
 TX_financial <- list()
 TX_financial[[1]] <- TX_DAC
 TX_financial[[2]] <- ppl14_24
-TX_financial[[3]] <- cwsrf_by_rank
-TX_financial[[4]] <- cwsrf_ppl14_24
+TX_financial[[3]] <- dw_srf
+TX_financial[[4]] <- cwsrf_by_rank
+TX_financial[[5]] <- cwsrf_ppl14_24
 
 names(TX_financial) <- c("TX_affordability_DAC", "TX_PPL_SFY14_24",
+                         "TX_DWSRF_Analysis",
                          "SRF_analysis", "CWSRF_TX_PPL_SFY14_24")
 
 saveRDS(TX_financial, file="./data/raw/TX_financial_list.RData")

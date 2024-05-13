@@ -1191,14 +1191,14 @@ lqi_hcf <- aff %>%
   filter(east_tx_flag == "yes")
 
 ggplot(lqi_hcf, aes(x = estimate_mhi, y = total_water_year + total_sewer_year)) + 
-  geom_point(aes(color = hcf, 
-                 size = estimate_poc_alone_per)) + 
-  scale_color_continuous(name = "HCF") + 
-  scale_size_continuous(name = "% POC") + 
+  geom_point(aes(color = estimate_poc_alone_per), size = 5, 
+             alpha = 0.8) + 
+  # scale_color_continuous(name = "HCF") + 
+  scale_color_continuous(name = "% POC") + 
   theme_minimal() + 
-  labs(x = "Annual Median Household Income", 
-       y = "Annual Total Household Water Cost") + 
-  geom_vline(xintercept = 43700)
+  labs(x = "Annual Median Household Income ($)", 
+       y = "Annual Total Household Water Cost ($)") + 
+  geom_vline(xintercept = 43700, lty = "dashed")
 # Makes sense - they should be related since HCF is calculated using MHI
 
 
