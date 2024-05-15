@@ -1,3 +1,5 @@
+![](www/epic-logo-transparent.png)
+
 # Texas Drinking Water Analysis
 
 This repository contains code for downloading, organizing, and analyzing data for the Texas Drinking Water project. Data organized from this repository feed into the [Texas Community Water System Prioritization Tool](https://tx-app.policyinnovation.info/), which is a screening tool that can assist in prioritizing advocacy and technical assistance for community water systems in Texas. 
