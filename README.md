@@ -1,4 +1,4 @@
-![](www/epic-logo-transparent.png)
+![](epic-logo-transparent.png)
 
 # Texas Drinking Water Analysis
 
