@@ -16,4 +16,4 @@ Since this project utilizes EPIC's private amazon web service s3 buckets through
 
 Got feedback on our application? Take our [survey](https://forms.gle/Xjbeur68qukaRmFo7) and visit our [public log](https://docs.google.com/document/d/1MvfLFHDhTKoyLuk-cEPwFj8LPZTtdzPLBrkbhbuU38Y/edit)!
 
-Developed in partnership with [Cynthia & George Mitchell](https://cgmf.org/p/home.html) and [T.L.L Temple](https://tlltemple.foundation/) foundations by [Environmental Policy Innovation Center (EPIC)](https://tx-app.policyinnovation.info/policyinnovation.org). EPIC makes no assurances to the accuracy of the data. All underlying code, methods, and data are available under a Creative Commons License.
+Developed in partnership with [Cynthia & George Mitchell](https://cgmf.org/p/home.html) and [T.L.L Temple](https://tlltemple.foundation/) foundations by [Environmental Policy Innovation Center (EPIC)](https://www.policyinnovation.org/). EPIC makes no assurances to the accuracy of the data. All underlying code, methods, and data are available under a Creative Commons License.
