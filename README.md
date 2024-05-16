@@ -6,7 +6,8 @@ This repository contains code for downloading, organizing, and analyzing data fo
 
 For important context and descriptions of data used within this repository, please review our [data dictionary](https://docs.google.com/spreadsheets/d/1bzNPxhL-l6DeGElhG1c70Of8DGAQasMDUuX3rPHVe2A/edit#gid=0) and [methodology](https://docs.google.com/document/d/1va2Iq2oJxnqiwgNHD4bWpXKxdWbq-TYoYkosj1oz_JU/edit). The application repository is available [here](https://github.com/Environmental-Policy-Innovation-Center/tx-dw-tool). 
 
-## The pipeline for this project (organized in the code folder by number) includes: 
+## The pipeline for this project: 
+Files are organized in the code folder. Numbers are provided at the beginning of the file name to denote the order they should be run in the pipeline described below. Helper functions are provided in the code/functions/ folder, and an extra R markdown file is provided that describes our throught process for crosswalking census data to water utility service area boundaries. 
 
 -   Downloading, tidying, and organizing datasets. Data that require extensive tidying/reorganizing are captured in `1_TX_DW_downloading.Rmd`. These data are then read into `2_TX_DW_collating.Rmd`, where all data for the project are collected and organized into data lists that are organized by topic. These data lists are used in the application. 
 	
@@ -14,8 +15,11 @@ For important context and descriptions of data used within this repository, plea
 	
 -   Analyzing and answering research questions. Analysis files start with 4_TX_DW_ and are split up by topics: hydrology, socioeconomic, and governance. 
 
-Since this project utilizes EPIC's private amazon web service s3 buckets throughout the data pipeline, it is recommended that you redirect links in the code to your own private buckets. However, slight modification of this code (i.e., downloading the data to your local machine instead of uploading/downloading it from s3 buckets) will allow you to run this collection of files without amazon web services. 
+## How to run this code: 
+All data used in this project are publicly available - some datasets require manual download, but APIs and direct download links are used when available. Since this project utilizes EPIC's private amazon web service s3 buckets throughout the data pipeline, it is recommended that you redirect links in the code to your own private buckets. However, slight modification of this code (i.e., downloading the data to your local machine instead of uploading/downloading it from s3 buckets) will allow you to run this collection of files without amazon web services. 
 
+## Information and feedback:
 Got feedback on our application? Take our [survey](https://forms.gle/Xjbeur68qukaRmFo7) and visit our [public log](https://docs.google.com/document/d/1MvfLFHDhTKoyLuk-cEPwFj8LPZTtdzPLBrkbhbuU38Y/edit)!
 
+## Attribution and license:
 Developed in partnership with [Cynthia & George Mitchell](https://cgmf.org/p/home.html) and [T.L.L Temple](https://tlltemple.foundation/) foundations by [Environmental Policy Innovation Center (EPIC)](https://www.policyinnovation.org/). EPIC makes no assurances to the accuracy of the data. All underlying code, methods, and data are available under a Creative Commons License.
