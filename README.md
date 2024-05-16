@@ -4,7 +4,7 @@
 
 This repository contains code for downloading, organizing, and analyzing data for the Texas Drinking Water project. Data organized from this repository feed into the [Texas Community Water System Prioritization Tool](https://tx-app.policyinnovation.info/), which is a screening tool that can assist in prioritizing advocacy and technical assistance for community water systems in Texas. 
 
-For important context and descriptions of data used within this repository, please review our [data dictionary](https://docs.google.com/spreadsheets/d/1bzNPxhL-l6DeGElhG1c70Of8DGAQasMDUuX3rPHVe2A/edit#gid=0) and [methodology](https://docs.google.com/document/d/1va2Iq2oJxnqiwgNHD4bWpXKxdWbq-TYoYkosj1oz_JU/edit). The application repository is available here. 
+For important context and descriptions of data used within this repository, please review our [data dictionary](https://docs.google.com/spreadsheets/d/1bzNPxhL-l6DeGElhG1c70Of8DGAQasMDUuX3rPHVe2A/edit#gid=0) and [methodology](https://docs.google.com/document/d/1va2Iq2oJxnqiwgNHD4bWpXKxdWbq-TYoYkosj1oz_JU/edit). The application repository is available [here](https://github.com/Environmental-Policy-Innovation-Center/tx-dw-tool). 
 
 ## The pipeline for this project (organized in the code folder by number) includes: 
 
