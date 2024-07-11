@@ -32,7 +32,7 @@ _______________________________________________________________________________
 ## Demographic #################################################################
 # SABs
 sab_census <- aws.s3::s3read_using(st_read, 
-                           object = "state-drinking-water/TX/raw/TX_sab_census.geojson",
+                           object = "state-drinking-water/TX/raw/TX_EPAsab_census.geojson",
                            bucket = "tech-team-data")
 
 # CEJST
@@ -69,10 +69,10 @@ TX_demographic[[3]] <- tx_ejscreen
 TX_demographic[[4]] <- svi
 TX_demographic[[5]] <- cvi
 names(TX_demographic) <- c("census", "cejst", "ejscreen", "svi", "cvi")
-saveRDS(TX_demographic, file="./data/raw/TX_demographic_list.RData")
+saveRDS(TX_demographic, file="./data/raw/TX_EPAdemographic_list.RData")
 put_object(
-  file = "./data/raw/TX_demographic_list.RData",
-  object = "/state-drinking-water/TX/clean/TX_demographic_list.RData",
+  file = "./data/raw/TX_EPAdemographic_list.RData",
+  object = "/state-drinking-water/TX/clean/TX_EPAdemographic_list.RData",
   bucket = "tech-team-data",
 )
 ```

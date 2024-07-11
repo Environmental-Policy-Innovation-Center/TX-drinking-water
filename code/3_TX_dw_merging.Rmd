@@ -22,7 +22,7 @@ source("./code/functions/intersect_aquifers.R")
 # reading demographic, environmental (gw and sw), water delivery system (wds)
 # and financial lists generated in TX_dw_collating: 
 demo <- aws.s3::s3read_using(readRDS, 
-                            object = "s3://tech-team-data/state-drinking-water/TX/clean/TX_demographic_list.RData")
+                            object = "s3://tech-team-data/state-drinking-water/TX/clean/TX_EPAdemographic_list.RData")
 
 enviro_sw <- aws.s3::s3read_using(readRDS, 
                             object = "s3://tech-team-data/state-drinking-water/TX/clean/TX_enviro_surface_list.RData")
@@ -489,7 +489,7 @@ well_gw_merge <- gw_wells %>%
 # key for variables included in most analyses, such as MHI, 
 # %POC, and violations (5yr and 10yr) - paperwork and health-based
 census_keys <- demo$census %>%
-  select("pwsid", "east_tx_flag", "estimate_mhi", "estimate_poc_alone_per")
+  select("pwsid", "estimate_mhi", "estimate_poc_alone_per")
 
 # grabbing sdiws violations, pwsids, and year
 sdwis <- wds$sdwis
@@ -545,10 +545,10 @@ TX_merging_keys[[2]] <- pwsid_sw_merge
 TX_merging_keys[[3]] <- well_gw_merge
 
 names(TX_merging_keys) <- c("analysis_keys", "pwsid_sw", "well_gw_county")
-saveRDS(TX_merging_keys, file="./data/clean/TX_merging_keys_list.RData")
+saveRDS(TX_merging_keys, file="./data/clean/TX_EPAmerging_keys_list.RData")
 put_object(
-  file = "./data/clean/TX_merging_keys_list.RData",
-  object = "/state-drinking-water/TX/clean/TX_merging_keys_list.RData",
+  file = "./data/clean/TX_EPAmerging_keys_list.RData",
+  object = "/state-drinking-water/TX/clean/TX_EPAmerging_keys_list.RData",
   bucket = "tech-team-data",
 )
 ```
