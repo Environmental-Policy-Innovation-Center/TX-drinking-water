@@ -65,13 +65,39 @@ sdwis_ws <- aws.s3::s3read_using(read.csv,
                                  object = "/service_area_boundaries/epa-sabs/sdwis-water-systems.csv",
                                  bucket = "tech-team-data") %>%
   filter(state_code == "TX") %>%
-  select(pwsid, primacy_type, primary_source_code, owner_type_code, city_name)
+  # city_name in this df is NOT city_served !!!! 
+  select(pwsid, primacy_type, primary_source_code, owner_type_code)
 
 # merging sdwis vars into SAB dataset: 
 sab_sdwis <- merge(sab, sdwis_ws, by = "pwsid", all.x = T) %>%
-  relocate(primacy_type:city_name, .after = primacy_agency)
-# NOTE: we no longer have the east_tx_flag, county_served, or service area type
-# I tried to grab most of these - like city_served, and system owner type
+  relocate(primacy_type:owner_type_code, .after = primacy_agency)
+# NOTE: we no longer have the east_tx_flag, county_served - filling these 
+# gaps below: 
+
+# add pop_density
+sab_sdwis <- sab_sdwis %>%
+    mutate(area_miles = as.numeric(sf::st_area(.))) %>%
+    mutate(area_miles = area_miles/27880000) %>%
+    mutate(pop_density = estimate_total_pop / area_miles)
+
+# add city and county served - the EPA's SABs no longer have this info, 
+# so I'm grabbing it from ECHO
+# create file for zipped download of SDWIS latest: 
+file_loc <- "./data/raw/sdwa_download"
+download.file("https://echo.epa.gov/files/echodownloads/SDWA_latest_downloads.zip", 
+              destfile = paste0(file_loc, ".zip"))
+unzip(zipfile = paste0(file_loc, ".zip"), exdir = file_loc) 
+file.remove(paste0(file_loc, ".zip"))
+# grab geographic areas csv file from unzipped folder: 
+sdwa_geog_areas <- read.csv(paste0(file_loc, "/SDWA_GEOGRAPHIC_AREAS.csv")) %>%
+  janitor::clean_names() %>%
+  filter(pwsid %in% sab_sdwis$pwsid) %>%
+  # NOTE: city_served is blank for everything in TX
+  select(pwsid, county_served)
+
+# merge with dataset: 
+sab_sdwis <- merge(sab_sdwis, sdwa_geog_areas, by = "pwsid", all.x = T) %>%
+  relocate(county_served, .after = pws_name)
 
 # SAB & Census - writing this to s3: 
 tmp <- tempfile()
