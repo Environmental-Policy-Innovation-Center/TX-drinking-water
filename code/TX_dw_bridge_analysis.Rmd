@@ -1,0 +1,938 @@
+---
+title: "TX Water Systems - Bridge Grant Analysis"
+author: "EmmaLi Tsai"
+date: "2024-09-23"
+output: 
+  html_document:
+    toc: true
+    theme: united
+---
+```{r setup, include=FALSE} 
+knitr::opts_chunk$set(warning = FALSE, message = FALSE) 
+```
+
+# 0.0 Set-up
+```{r message = F, results='hide'}
+# No scientific notation
+options(scipen = 99999999)
+options(tigris_use_cache = TRUE)
+
+# Libraries: 
+library(aws.s3)
+library(sf)
+library(tidyverse)
+library(tidycensus)
+library(scales)
+library(leaflet)
+library(plotly)
+library(tigris)
+
+# grabbing national xwalk: 
+# NOTE: the xwalk has been updated with the fixed epa block parcel crosswalk 
+# from blue conduit, and therefore likely has more "accurate" data for tier 
+# 2 crosswalked systems. Going to resort to primarily using the xwalk 
+xwalk <- aws.s3::s3read_using(st_read, 
+                              object = "/service_area_boundaries/epa-sabs/epa-sabs-crosswalk.geojson",
+                              bucket = "tech-team-data",
+                              quiet = TRUE)
+
+# grabbing data from TX application: 
+app_data <-  aws.s3::s3read_using(st_read, 
+                                  object = "/state-drinking-water/TX/clean/app/app-data-prod.geojson",
+                                  bucket = "tech-team-data",
+                                  quiet = TRUE)
+
+# filtering xwalk for pwsids in app_data, and adding water system information 
+# that's missing from the EPA crosswalk
+app_data_ws_info <- app_data %>%
+  as.data.frame() %>%
+  select(pwsid:primary_source_code) 
+
+tx_xwalk <- xwalk %>%
+  filter(pwsid %in% app_data$pwsid) %>%
+  left_join(app_data_ws_info, by = "pwsid")
+
+# grabbing baseline 2020 census stats for TX for percentages: 
+tx_county_pop <- tidycensus::get_acs(
+  geography = "county",
+  variables = c(total_pop = "B01003_001"),
+  state = "TX",
+  year = 2020,
+  geometry = TRUE
+)
+
+# financial data from the tx project: 
+fin <- aws.s3::s3read_using(readRDS, 
+                            object = "s3://tech-team-data/state-drinking-water/TX/clean/TX_financial_list.RData")
+
+
+# themes: 
+sysfonts::font_add_google("Lato")
+showtext::showtext_auto()
+
+cat_palette <- colorRampPalette(c("#172f60","#1054a8",
+                                  "#791a7b","#de9d29", 
+                                  "#b15712","#4ea324"))
+cont_palette <- colorRampPalette(c("#172f60","#4ea324"))
+
+epic_chart_theme <- theme_minimal() + 
+  theme(legend.position = "right", 
+        text = element_text(size = 13, family = "Lato"), 
+        legend.text = element_text(size = 10, family = "Lato"), 
+        legend.title = element_text(size = 11, family = "Lato"), 
+        axis.text.x = element_text(margin = margin(t = 10, r = 0, 
+                                                   b = 0, l = 0)), 
+        axis.title.x = element_text(margin = margin(t = 10, r = 0, 
+                                                    b = 0, l = 0)), 
+        axis.text.y = element_text(margin = margin(t = 0, r = 10, 
+                                                   b = 0, l = 0)), 
+        axis.title.y = element_text(margin = margin(t = 0, r = 10, 
+                                                    b = 0, l = 0))) 
+
+# function for getting sab xwalked stats over time: 
+source("/Users/emmalitsai/TX-drinking-water/code/functions/state_sab_crosswalk_year.R")
+```
+
+# 1.0: What is the size of the opportunity?
+## 1.1: What is the number of Texans served by CWS that pull primarily from surface water?
+```{r}
+# what source codes are we working with?
+# unique(tx_xwalk$primary_source_code)
+
+# summing population where source code is surface or surface purchased: 
+tx_pop_sw <- tx_xwalk %>%
+  as.data.frame() %>%
+  # filter(primary_source_code %in% c("Surface", "Surface-Purchased")) %>%
+  summarize(total_population_surface = sum(estimate_total_pop, na.rm = T))
+
+# how does this compare to the total population in 2020?
+tx_pop_total <- sum(tx_county_pop$estimate)
+```
+The number of Texans served by CWS is `r round(tx_pop_sw, 0)`. With `r tx_pop_total` people living in Texas, this reflects approximately `r round(100*(tx_pop_sw/tx_pop_total), 2)`% of the population. 
+
+## 1.2: What is the amount of investment that goes into CWS across the state? 
+```{r}
+# From my notes, this is the TX DWSRF analysis from Phil & Danielle: 
+# this is from https://github.com/Environmental-Policy-Innovation-Center/water-data/tree/main/clean-data/dwsrf-awards
+# analysis doc: https://docs.google.com/document/d/1zzS5IASdb7CtN8WcIs8u17CaFpKJYjNrmriGB6_WVZQ/edit
+# contains FOIA'd DWSRF awards from October 2009 - 2020
+srf <- fin$TX_DWSRF_Analysis 
+tx_srf <- srf %>% 
+  filter(pwsid %in% tx_xwalk$pwsid)
+
+# TODO OR - use the srf dashboard to pull 2020-2023?
+
+# which ones have received funding?
+srf_funded <- tx_xwalk %>%
+  filter(pwsid %in% tx_srf$pwsid)
+
+# what % of the population does this reflect?
+# TODO-  is this the project_population_served?
+srf_funded_pop <-  tx_xwalk %>%
+  as.data.frame() %>%
+  # select(pwsid, project_population_served) %>%
+  # unique() %>%
+  filter(pwsid %in% tx_srf$pwsid) %>%
+  summarize(funded_pop = sum(estimate_total_pop, na.rm = T))
+
+# what % of the population served by CWS does this reflect?
+total_cws_pop <- sum(tx_xwalk$estimate_total_pop, na.rm = T)
+
+
+# how much total assistance has been provided?
+assistance_stats <- tx_srf %>%
+  summarize(total_assistance = dollar(sum(assistance_amt)), 
+            total_pf = dollar(sum(prin_forgive_amt)), 
+            mean_assistance = dollar(mean(assistance_amt)), 
+            mean_pf = dollar(mean(prin_forgive_amt)))
+
+```
+Out of `r length(unique(tx_xwalk$pwsid))` CWS in Texas, `r length(unique(srf_funded$pwsid))` have received Drinking Water State Revolving Funds over 2009-2020. This reflects `r round((length(unique(srf_funded$pwsid))/length(unique(tx_xwalk$pwsid))*100), 2)`% of CWS in Texas. 
+
+Based on water system populations, systems that have been funded by DWSRF serve `r round(srf_funded_pop$funded_pop, 0)` people, which reflects `r round((srf_funded_pop$funded_pop / total_cws_pop)*100, 0)`% of the population served by CWS in Texas, and `r round((srf_funded_pop$funded_pop / tx_pop_total)*100, 0)`% of the total population in Texas. 
+
+```{r}
+# how has the amount of total assistance/year changed through time?
+srf_year_summary <- tx_srf %>% 
+  group_by(year) %>%
+  summarize(total_amt = sum(assistance_amt))
+
+# plot to show results through time: 
+ggplot(srf_year_summary, aes(x = year, y = total_amt)) + 
+  ggchicklet::geom_chicklet(stat = "identity", 
+                            color = "white", 
+                            fill = "#1054a8", 
+                            alpha = 0.7) + 
+  scale_y_continuous(labels = scales::dollar_format(prefix="$")) + 
+  epic_chart_theme + 
+  labs(x = "Year", 
+       y = "Total Assistance ($)") + 
+  ggtitle("Amount of DWSRF Assistance has Increased Since 2009")
+
+```
+
+From 2009-2020, the amount of total assistance received by CWS in Texas is `r assistance_stats$total_assistance`, with an average of `r assistance_stats$mean_assistance` across our study period. The total amount of principal forgiveness is `r assistance_stats$total_pf`, with an average of `r assistance_stats$mean_pf`.
+
+```{r}
+# what counties have received the most funding? 
+tx_funded_counties <- tx_xwalk %>%
+  as.data.frame() %>%
+  filter(pwsid %in% tx_srf$pwsid) %>%
+  select(pwsid, county_served)
+
+tx_srf_counties <- merge(tx_srf, tx_funded_counties, all = T)
+
+tx_srf_county_summary <- tx_srf_counties %>%
+  group_by(county_served) %>%
+  summarize(total_assistance = sum(assistance_amt), 
+            total_yrs_funded = length(unique(year)), 
+            assistance_per_yr = total_assistance/total_yrs_funded) %>%
+  mutate(county_clean = paste0(county_served, " County, Texas"))
+
+# merging with TX county geometries for mapping: 
+tx_county_simple <- tx_county_pop %>%
+  select(NAME, geometry) %>%
+  unique()
+tx_srf_county_geom <- merge(tx_srf_county_summary, tx_county_pop, 
+                            by.x = "county_clean", by.y = "NAME", 
+                            all.x = T) %>%
+  st_as_sf() 
+
+
+# plotting: 
+assistance_pal <- colorNumeric(
+  palette = cont_palette(5),
+  domain = tx_srf_county_geom$total_assistance)
+
+leaflet() %>%
+    addProviderTiles(providers$CartoDB.Positron, 
+                   group = "Toner Lite") %>%
+    addPolygons(data = tx_county_pop,
+              # slight opacity
+              fillOpacity = 0.2,
+              color = "gray",
+              weight = 1, 
+              smoothFactor = 0) %>%
+  addPolygons(data = tx_srf_county_geom,
+              fillColor = ~assistance_pal(total_assistance),
+              # slight opacity
+              fillOpacity = 0.8,
+              color = "white",
+              weight = 1, 
+              smoothFactor = 0, 
+              label = paste0("County: ", tx_srf_county_geom$county_served, 
+                             "; Total Assistance : ",
+                             dollar(tx_srf_county_geom$total_assistance), 
+                             "; Total Years Funded: ",
+                             (tx_srf_county_geom$total_yrs_funded), 
+                             "; Assistance/Year: ",
+                             dollar(tx_srf_county_geom$assistance_per_yr))) %>%
+  addLegend("bottomright",
+            pal = assistance_pal,
+            values = tx_srf_county_geom$total_assistance,
+            # if working with money or percentages, use the 
+            # follow label formats: 
+            labFormat = labelFormat(prefix = "$"),
+            # labFormat = labelFormat(prefix = "%"),
+            title = "Total Assistance ($)\n - 2009 to 2020",
+            opacity = 1)
+
+```
+Which counties have received the most funding?
+
+The counties that have received the largest total assistance over our study period are located around large urban centers such as Dallas (both Dallas & Tarrant county), San Antonio (Bexar county), and Houston (Brazoria county). Bexar county around San Antonio has received the largest amount of funding over our study period, with ~$200 million received over the course of 7 years. 
+```{r}
+# what are the characteristics of utilities that have received funding?
+tx_funding_flag <- tx_xwalk %>%
+  as.data.frame() %>%
+  mutate(funded = case_when(
+    pwsid %in% tx_srf$pwsid ~ "Funded", 
+    TRUE ~ "Not Funded"
+  )) %>%
+  select(pwsid, funded, estimate_poc_alone_per, estimate_mhi, 
+         estimate_laborforce_unemployed_per, population_served_count,
+         dwater, 
+         # primary_source_code, 
+         estimate_hh_below_pov_per) %>%
+  rename("%POC" = estimate_poc_alone_per, 
+          "MHI" = estimate_mhi, 
+         `Population Served` = population_served_count,
+         `% Unemployment` = estimate_laborforce_unemployed_per, 
+          `Drinking Water Metric` = dwater,
+          # `Water Source` = primary_source_code, 
+          `% Households in Poverty` = estimate_hh_below_pov_per)
+
+
+# summary stats for text: 
+summary_stats <- tx_funding_flag %>%
+  group_by(funded) %>%
+  summarize(across(2:7, ~mean(.x, na.rm = T))) %>%
+  rename("poc" = `%POC`, 
+         "unemp" =  `% Unemployment`, 
+         "pop" =`Population Served`, 
+         "dw" = `Drinking Water Metric`,
+         "poverty" = `% Households in Poverty`)
+
+funded <- summary_stats %>%
+  filter(funded == "Funded")
+not_funded <- summary_stats %>%
+  filter(funded != "Funded")
+
+# is there any difference by source water? 
+by_source <- tx_xwalk %>%
+  as.data.frame() %>%
+  mutate(funded = case_when(
+    pwsid %in% tx_srf$pwsid ~ "Funded", 
+    TRUE ~ "Not Funded"
+  )) %>%
+  select(pwsid, funded, primary_source_code) %>%
+  group_by(funded, primary_source_code) %>%
+  tally()
+
+# long for plotting: 
+tx_funding_long <- tx_funding_flag %>%
+  pivot_longer(., cols = 3:8)
+
+ggplot(tx_funding_long, aes(x = funded, y = value, 
+                            color = funded)) + 
+  geom_jitter(width = 0.05, alpha = 0.2) + 
+  geom_boxplot(alpha = 0.6, 
+                 outliers = FALSE) + 
+  facet_wrap(~name, scales = "free") + 
+  scale_color_manual(values = cat_palette(2), 
+                     name = "") + 
+  epic_chart_theme +
+  labs(x = "", y = "Value") + 
+  theme(legend.position = "bottom")
+```
+
+What are the characteristics of utilities that have received funding?
+
+Based on the metrics plotted above, utilities that have received funding have a larger mean percentage of households in poverty by `r round(funded$poverty - not_funded$poverty, 2)`%. These utilities also have a larger mean population they serve by `r round(funded$pop - not_funded$pop, 0)` people, likely because many of the utilities that have received funding provide services to large population centers, as shown in the question above. Funded systems also have a lower median household income than unfunded systems by `r dollar(abs(funded$MHI - not_funded$MHI))`, and serve less diverse communities. Both funded and unfunded systems were found to be primarily pulling groundwater. 
+
+One of the most striking difference across all of our indicators was EPA's new drinking water metric, where systems that received funding had a mean value that was `r round(funded$dw - not_funded$dw, 2)` larger than systems that have not received funding. 
+
+
+# 2.0: What are the characteristics of a fragile system?
+```{r}
+# TX SRF DAC definition: https://www.epa.gov/system/files/documents/2022-10/DWSRF%20DAC%20Definitions%20Report_October%202022%20Updates_FINAL_508.pdf
+# affordability criteria: 
+# (a) Has an Annual Median Household Income (AMHI) that is no more than 75 percent of the state median household income using an acceptable source of socioeconomic data, and
+# (b) the Household Cost Factor (HCF) that considers income, unemployment rates, and population trends must be greater than or equal to 1 percent if only water or sewer service is provided or greater than or equal to 2 percent if both water and sewer service are provided.
+
+# The Household Cost Factor in the IUP is the cost of water and wastewater utilities per household (after completion of the proposed project) in the project service area compared to the project area’s current median household income level, with two adjustments. Specifically, the formula is:
+
+# A=Average annual water bill per household
+# B= Average annual wastewater bill per household
+# C= Annual loan cost per household of the new financing
+# D= AMHI for the project service area
+# HCF = (A + B + C) / D
+
+# In addition, the state includes two adjustments that can only increase the HCF (i.e., benefit the applicant) - this includes unemployment rates & population adjustments 
+
+
+# could ask water team for loan costs 
+
+
+# TX definition of "safe, adequate, and reliable"
+# Texas health definition code - approved or superior 
+# test <- aws.s3::s3read_using(read.csv, 
+#                               object = "s3://tech-team-data/state-drinking-water/TX/raw/TX_TCEQ_DWW/TX_20231217/WaterSystemDetail/TX_Water System Details_20231217_20231229203427.csv")
+# test %>%
+#   filter(Type == "System  Recognition") %>%
+#   group_by(Value) %>%
+#   tally()
+# lol nevermind: 
+#   Value           n
+#   <chr>       <int>
+# 1 APPROVED       19
+# 2 NO DATA     13625
+# 3 PROVISIONAL     8
+# 4 SUPERIOR      738
+
+# check this: s3://tech-team-data/state-drinking-water/TX/raw/TX_TCEQ_DWW/TX_20231217/WaterSystemDetail/TX_Water System Details_20231217_20231229203427.csv
+
+# TX definition of a failing system 
+```
+
+# 3.0: How do water systems change over time in terms of fragility and durability? 
+```{r eval = FALSE}
+# prep for this section: 
+
+# which system have been around for that long?
+# NOTE - absolute file paths needed to knitting rmd 
+sdwa_info <- read.csv("/Users/emmalitsai/TX-drinking-water/data/raw/sdwa_download/SDWA_FACILITIES.csv") %>%
+  mutate(start_date = as.Date(FIRST_REPORTED_DATE, tryFormats = c("%m/%d/%Y")),
+         year_date = year(start_date))
+
+# # NOTE - this is pwsids with FACILITIES where the first report is at least 2010
+pwsids_since_2010 <- sdwa_info %>%
+  filter(year_date <= 2010) %>%
+  filter(PWSID %in% tx_xwalk$pwsid) %>%
+  distinct(PWSID)
+
+# # filtering SABs for just these 
+tx_xwalk_2010_pwsids <- tx_xwalk %>%
+  filter(pwsid %in% pwsids_since_2010$PWSID) %>%
+  select(pwsid:shape_length)
+
+# NOTE - only need to run this if running the xwalk again - shouldn't need
+# to run while knitting 
+# need to reconstruct block housing and population weights - the tigris block()
+# function does not return this information from 2010 - 2019. 
+# grabbing 2020: 
+state_blocks_2020 <- tigris::blocks(
+  state = "TX",
+  year = 2020)
+
+# grabbing 2010:
+# NOTE - with going back to 2010, we've lost education categories and 
+# % unemployment 
+# dec_vars_all <- load_variables(2010, "sf1", cache = TRUE)
+dec_vars <- c(HOUSING10 = "H001001",
+              POP10 = "P001001")
+state_blocks_2010 <- get_decennial(
+  geography = "block",
+  variables = dec_vars,
+  year = 2010,
+  state = "TX",
+  geometry = TRUE
+)
+
+# pivoting to wide to work with xwalk: 
+state_blocks_2010_wide <- state_blocks_2010 %>%
+  pivot_wider(., names_from = variable, values_from = value)
+
+# 2015 is going to be tricky - grabbing a relationship file:
+file <-"https://www2.census.gov/geo/docs/maps-data/data/rel2020/t10t20/TAB2010_TAB2020_ST48.zip"
+file_loc <- "/Users/emmalitsai/TX-drinking-water/data/raw/census_rel"
+download.file(file,
+              destfile = paste0(file_loc, ".zip"))
+unzip(zipfile = paste0(fsile_loc, ".zip"), exdir = file_loc)
+file.remove(paste0(file_loc, ".zip"))
+
+# reading in block relationships from 2010 to 2020 in TX:
+block_2010_2020_rel <- read.table("/Users/emmalitsai/TX-drinking-water/data/raw/census_rel/tab2010_tab2020_st48_tx.txt", 
+                                  sep = "|")
+# correcting weird column names: 
+names(block_2010_2020_rel) <- block_2010_2020_rel[1,]
+block_2010_2020_rel <- block_2010_2020_rel[2:nrow(block_2010_2020_rel),]
+
+# building block relationships
+block_rel <- block_2010_2020_rel %>%
+  mutate(GEOID_10 = paste0(STATE_2010, COUNTY_2010, TRACT_2010, BLK_2010), 
+         GEOID_20 = paste0(STATE_2020, COUNTY_2020, TRACT_2020, BLK_2020))
+
+# want to keep 2010 block geometries, but grab mean housing and pop between two 
+# time periods
+block_2020_simple <- state_blocks_2020 %>%
+  as.data.frame() %>%
+  select(GEOID20, HOUSING20, POP20) 
+block_2020_rel <- merge(block_2020_simple, block_rel, by.x = "GEOID20", 
+                        by.y = "GEOID_20", all = T)
+block_2010_rel <- merge(state_blocks_2010_wide, block_2020_rel, 
+                        by.x = "GEOID", by.y = "GEOID_10", all = T)
+
+# grabbing mean between years of housing data, AND grouping by 2010 
+# geoid to calculate mean values for each original 2010 geoid (some blocks 
+# were either merged or split over the decade)
+state_blocks_2015 <- block_2010_rel %>%
+  as.data.frame() %>%
+  filter(!(is.na(HOUSING10))) %>%
+  select(GEOID, GEOID20, HOUSING10, HOUSING20, POP10, POP20) %>%
+  rowwise() %>%
+  mutate(HOUSING15 = mean(c(HOUSING10, HOUSING20)), 
+         POP15 = mean(c(POP10, POP20))) %>%
+  group_by(GEOID) %>%
+  summarize(HOUSING15 = mean(HOUSING15), 
+            POP15 = mean(POP15))
+
+# adding original 2010 geometries back: 
+geom_2010 <- state_blocks_2010_wide %>%
+  select("GEOID")
+state_blocks_2015 <- merge(state_blocks_2015, geom_2010, by = "GEOID") %>%
+  st_as_sf()
+
+# crosswalkin' 2015 and 2010: 
+tx_xwalk_2015 <- state_sab_crosswalk_year(tx_xwalk_2010_pwsids, "TX", 2015,
+                                          state_blocks_2015,
+                                          "WGS84")
+# st_write(tx_xwalk_2015, "/Users/emmalitsai/TX-drinking-water/data/raw/tx_xwalk_2015.geojson")
+# put_object(
+#   file = "/Users/emmalitsai/TX-drinking-water/data/raw/tx_xwalk_2015.geojson",
+#   object = "/state-drinking-water/TX/raw/TX_xwalk_2015.geojson",
+#   bucket = "tech-team-data"
+# )
+
+tx_xwalk_2010 <- state_sab_crosswalk_year(tx_xwalk_2010_pwsids, "TX", 2010,
+                                            state_blocks_2010_wide,
+                                            "WGS84")
+# st_write(tx_xwalk_2010, "/Users/emmalitsai/TX-drinking-water/data/raw/tx_xwalk_2010.geojson")
+# put_object(
+#   file = "/Users/emmalitsai/TX-drinking-water/data/raw/tx_xwalk_2010.geojson",
+#   object = "/state-drinking-water/TX/raw/TX_xwalk_2010.geojson",
+#   bucket = "tech-team-data"
+# )
+
+# download SDWA database and look over entire timescale 
+file_loc <- "/Users/emmalitsai/TX-drinking-water/data/raw/sdwa_download"
+# download.file("https://echo.epa.gov/files/echodownloads/SDWA_latest_downloads.zip", 
+#               destfile = paste0(file_loc, ".zip"))
+# unzip(zipfile = paste0(file_loc, ".zip"), exdir = file_loc) 
+# file.remove(paste0(file_loc, ".zip"))
+
+```
+
+## 3.1: What changes do we see to population growth in fragile systems? 
+```{r}
+# population growth through time, and ideally this would also include 
+# MHI 
+tx_xwalk_2010 <- aws.s3::s3read_using(st_read, 
+                                      object = "/state-drinking-water/TX/raw/TX_xwalk_2010.geojson",
+                                      bucket = "tech-team-data",
+                                      quiet = TRUE)
+
+tx_xwalk_2015 <- aws.s3::s3read_using(st_read, 
+                                      object = "/state-drinking-water/TX/raw/TX_xwalk_2015.geojson",
+                                      bucket = "tech-team-data",
+                                      quiet = TRUE)
+
+# tidying and mutating: 
+tx_xwalk_2015 <- tx_xwalk_2015 %>% 
+  mutate(year = "2015")
+tx_xwalk_2010 <- tx_xwalk_2010 %>% 
+  mutate(year = "2010")
+tx_xwalk_2020 <- tx_xwalk %>%
+  filter(pwsid %in% tx_xwalk_2010$pwsid) %>%
+  mutate(year = "2020")
+
+# selecting only columns of interest for now: 
+tx_2015_simple <- tx_xwalk_2015 %>%
+  as.data.frame() %>%
+  select(pwsid, tier_crosswalk, estimate_total_pop, estimate_mhi)
+names(tx_2015_simple) <- paste0(names(tx_2015_simple), "_2015")
+
+tx_2010_simple <- tx_xwalk_2010 %>%
+  as.data.frame() %>%
+  select(pwsid, tier_crosswalk, estimate_total_pop, estimate_mhi)
+names(tx_2010_simple) <- paste0(names(tx_2010_simple), "_2010")
+
+tx_2020_simple <- tx_xwalk_2020 %>%
+  as.data.frame() %>%
+  select(pwsid, tier_crosswalk, estimate_total_pop, estimate_mhi)
+names(tx_2020_simple) <- paste0(names(tx_2020_simple), "_2020")
+
+# comparisons over a decade: 
+tx_decade <- merge(tx_2010_simple, tx_2015_simple, 
+                   by.x = "pwsid_2010", 
+                   by.y = "pwsid_2015", all = T) 
+
+tx_decade <- merge(tx_decade, tx_2020_simple, by.x = "pwsid_2010", by.y = "pwsid_2020", all = T) %>%
+# reducing analysis to ONLY tier 1 crosswalk for ALL time periods 
+  filter(tier_crosswalk_2010 == "tier_1" & tier_crosswalk_2020 == "tier_1" & tier_crosswalk_2015 == "tier_1") %>%
+  # adjusting for inflation - using: https://data.bls.gov/cgi-bin/cpicalc.pl?cost1=2000&year1=201001&year2=202001
+  mutate(estimate_mhi_2010_inf_adj = estimate_mhi_2010*1.190525, 
+         estimate_mhi_2015_inf_adj = estimate_mhi_2015*1.10283, 
+         pct_change_pop_2010_2015 = 100*((estimate_total_pop_2015 - estimate_total_pop_2010)/estimate_total_pop_2010),
+         pct_change_mhi_2010_2015 = 100*((estimate_mhi_2015_inf_adj - estimate_mhi_2010_inf_adj)/estimate_mhi_2010_inf_adj),
+         pct_change_pop_2015_2020 = 100*((estimate_total_pop_2020 - estimate_total_pop_2015)/estimate_total_pop_2015),
+         pct_change_mhi_2015_2020 = 100*((estimate_mhi_2020 - estimate_mhi_2015_inf_adj)/estimate_mhi_2015_inf_adj),
+         pct_change_pop_2010_2020 = 100*((estimate_total_pop_2020 - estimate_total_pop_2010)/estimate_total_pop_2010), 
+         pct_change_mhi_2010_2020 = 100*((estimate_mhi_2020 - estimate_mhi_2010_inf_adj)/estimate_mhi_2010_inf_adj)) %>%
+  rename(pwsid = pwsid_2010)
+
+# adding geoms back: 
+tx_geoms <- tx_xwalk %>% 
+  select(pwsid, county_served)
+
+tx_decade_geoms <- tx_decade %>%
+  left_join(tx_geoms, by = "pwsid") %>%
+  st_as_sf()
+
+# plotting: 
+pop_pal <- colorBin(
+  bins = c(-90, -20, 0, 20, 50, 100, 20000),
+  palette = c("#d73027", "#fc8d59", "white", "#d9ef8b", "#91cf60", "#1a9850", "darkgreen"),
+  domain = tx_decade_geoms$pct_change_pop_2010_2020)
+
+leaflet() %>%
+    addProviderTiles(providers$CartoDB.Positron, 
+                   group = "Toner Lite") %>%
+  addPolygons(data = tx_decade_geoms,
+              fillColor = ~pop_pal(pct_change_pop_2010_2020),
+              # slight opacity
+              fillOpacity = 0.8,
+              stroke = T, 
+              color = "black",
+              opacity = 0.2, 
+              weight = 1,
+              # smoothFactor = 0.5, 
+              label = paste0("pwsid: ", tx_decade_geoms$pwsid, 
+                             "; % pop change : ",
+                             round(tx_decade_geoms$pct_change_pop_2010_2020, 0))) %>%
+  addLegend("bottomright",
+            pal = pop_pal,
+            values = tx_decade_geoms$pct_change_pop_2010_2020,
+            # if working with money or percentages, use the 
+            # follow label formats: 
+            # labFormat = labelFormat(prefix = "$"),
+            labFormat = labelFormat(prefix = "%"),
+            title = "% Population Change 2010 to 2020",
+            opacity = 1)
+```
+
+Broadly, systems in suburban areas around cities have grown, while populations within cities have shrunk since 2010. Water systems located in NE Texas have generally exhibited population decline since 2010, along with more rural areas of Texas. 
+
+```{r}
+mhi_pal <- colorBin(
+  bins = c(-100, -50, -20, 0, 20, 100, 300),
+  palette = c("#d73027", "#fc8d59", "white", "#d9ef8b", "#91cf60", "#1a9850", "darkgreen"),
+  domain = tx_decade_geoms$pct_change_mhi_2010_2020)
+
+leaflet() %>%
+    addProviderTiles(providers$CartoDB.Positron, 
+                   group = "Toner Lite") %>%
+  addPolygons(data = tx_decade_geoms,
+           fillColor = ~mhi_pal(pct_change_mhi_2010_2020),
+              # slight opacity
+              fillOpacity = 0.8,
+              stroke = T, 
+              color = "black",
+              opacity = 0.2, 
+              weight = 1,
+              # smoothFactor = 0.5, 
+              label = paste0("pwsid: ", tx_decade_geoms$pwsid, 
+                             "; % MHI change : ",
+                             round(tx_decade_geoms$pct_change_mhi_2010_2020, 0))) %>%
+  addLegend("bottomright",
+            pal = mhi_pal,
+            values = tx_decade_geoms$pct_change_mhi_2010_2020,
+            # if working with money or percentages, use the 
+            # follow label formats: 
+            # labFormat = labelFormat(prefix = "$"),
+            # labFormat = labelFormat(prefix = "%"),
+            title = "% MHI Change 2010 to 2020",
+            opacity = 1)
+```
+
+Median household income (already adjusted for inflation) within CWS in Texas have broadly increased. There are some water systems located in mostly rural areas that have exhibited slight declines in MHI over the past decade. 
+
+```{r}
+
+# looking at % change in population and % change in median household income: 
+leaflet() %>%
+    addProviderTiles(providers$CartoDB.Positron, 
+                   group = "Toner Lite") %>%
+  bivariatechoropleths::addBivariateChoropleth(
+    map_data = tx_decade_geoms,
+    var1_name = pct_change_pop_2010_2020,
+    var2_name = pct_change_mhi_2010_2020,
+    ntiles= 3,
+    var1_label = "Population % Change",
+    var2_label = "MHI % Change",
+    # region_name = "CSDNAME",
+    weight = 1,
+    fillOpacity = 0.7,
+    color = "grey",
+    highlightOptions = leaflet::highlightOptions(color = "black",
+                                                 weight = 2,
+                                                 opacity = 1)) %>%
+  # if I don't add this, we can't see pwsids :(
+  addPolygons(data = tx_decade_geoms, 
+              fillOpacity = 0, 
+              opacity = 0, 
+              label = paste0("pwsid: ", tx_decade_geoms$pwsid,
+                             "; % MHI change : ",
+                             round(tx_decade_geoms$pct_change_mhi_2010_2020, 0),
+                             "; % Pop change : ",
+                             round(tx_decade_geoms$pct_change_pop_2010_2020, 0)))
+```
+
+Above, you can see CWS boundaries mapped by % change in population and MHI from 2010-2020. The areas of particular interest are in bright teal, where the CWS exhibited increases in population, but little to no change in MHI. Areas located in white are also of interest, as this indicates a system that is losing both populations and income from 2010-2020. 
+
+```{r, results = "asis"}
+cws_of_interest <- tx_decade_geoms %>%
+  mutate(Category = case_when(
+    (pct_change_pop_2010_2020 > 0 & pct_change_mhi_2010_2020 < 0) ~ "Pop Growing, MHI Decreasing", 
+    (pct_change_pop_2010_2020 < 0 & pct_change_mhi_2010_2020 < 0) ~ "Pop & MHI Decreasing", 
+  TRUE ~ "No Concern Yet"))
+
+table <- cws_of_interest %>% 
+  as.data.frame() %>%
+  group_by(Category) %>%
+  summarize(CWS = n())
+knitr::kable(table, caption = "Number of CWS in each Category")
+```
+
+While most CWS exhibit positive MHI and growth over the past decade, there are ~836 CWS in TX where the population has grown over time, but the MHI has decreased. There are 490 that have decreased in both population and MHI over the course of the past decade - indicating the system may be serving less people and with lower income now than in 2010. 
+
+```{r}
+# plotting 
+# ggplot(tx_decade, aes(x = pct_change_pop, y = pct_change_mhi)) + 
+#   geom_point() + 
+#   labs(x = "% Population Change", 
+#        y = "% MHI Change") + 
+#   epic_chart_theme
+
+# combining all of the data: 
+tx_2010_all <- tx_xwalk_2010 %>%
+  as.data.frame() %>%
+  select(-starts_with("geom"))
+
+tx_2015_all <- tx_xwalk_2015 %>%
+  as.data.frame() %>%
+  select(-starts_with("geom"))
+
+tx_2020_all <- tx_xwalk_2020 %>%
+  as.data.frame() %>%
+  select(-starts_with("geom")) %>%
+  select(names(tx_2010_all)) %>%
+  mutate(date_modified = as.character(date_modified), 
+         verification_date = as.character(verification_date))
+
+tx_decade_all <- bind_rows(tx_2010_all, tx_2015_all, 
+                           tx_2020_all) %>%
+  select(pwsid, estimate_total_pop:year) %>%
+  select(-contains("age")) %>%
+  select(pwsid, estimate_white_alone_per:estimate_hh_below_pov_per,
+         estimate_pop_below_200_pov_per, year)
+
+
+# pivoting to long for formatting:  
+tx_decade_long <- tx_decade_all %>%
+  pivot_longer(., estimate_white_alone_per:estimate_pop_below_200_pov_per)
+
+ggplot(tx_decade_long, aes(x = year, 
+                           y = value, color = year)) + 
+  geom_jitter(width = 0.2, alpha = 0.1) +
+  geom_violin(alpha = 0.8) +
+  facet_wrap(~name, scales = "free") + 
+  epic_chart_theme + 
+  scale_color_manual(values = cat_palette(3), 
+                     name = "") +
+  labs(x = "Year", y = "Value")
+```
+
+Demographic data for CWS in TX are relatively similar across the study period. Broadly, the %mixed population served by CWS in TX have increased sinc 2010, and the % of households below the poverty level have decreased. 
+
+
+## 3.2: What changes in violations do we see in fragile systems? 
+```{r fig.height = 10, fig.width = 11}
+# reading in violations: 
+sdwa_viols <- read.csv(paste0(file_loc, "/SDWA_VIOLATIONS_ENFORCEMENT.csv")) %>%
+  janitor::clean_names() 
+tx_viols <- sdwa_viols %>% 
+  filter(pwsid %in% tx_xwalk$pwsid) %>%
+  mutate(rule_code = as.character(rule_code))
+
+# violation codes:
+sdwa_codes <- read.csv(paste0(file_loc, "/SDWA_REF_CODE_VALUES.csv")) %>%
+  janitor::clean_names() 
+rule_codes <- sdwa_codes %>% 
+  filter(value_type %in% c("RULE_FAMILY_CODE")) %>%
+  rename(rule = value_description)
+
+# merging by rule code
+tx_viol_rulecode <- merge(tx_viols, rule_codes, 
+                          by.x = "rule_family_code", 
+                          by.y = "value_code", 
+                          all.x = T)
+
+# grabbing summaries by rule code & creating stacked bar plot: 
+health_viol <- tx_viol_rulecode %>%
+  mutate(start_date = as.Date(viol_first_reported_date, 
+                              tryFormats = c("%m/%d/%Y")), 
+         start_year = year(start_date)) %>%
+  filter(is_health_based_ind == "Y") %>%
+  group_by(start_year, rule) %>%
+  summarize(total = n())
+
+health_viol_plot <- ggplot(health_viol, aes(x = start_year, y = total, 
+                        fill = rule)) + 
+  geom_bar(stat = "identity") + 
+  scale_fill_manual(values = cat_palette(11), 
+                     name = "") +
+  theme_minimal() + 
+  theme(legend.position = "right", 
+        text = element_text(size = 13), 
+        legend.text = element_text(size = 10), 
+        legend.title = element_text(size = 11), 
+        axis.text.x = element_text(margin = margin(t = 10, r = 0, 
+                                                   b = 0, l = 0)), 
+        axis.title.x = element_text(margin = margin(t = 10, r = 0, 
+                                                    b = 0, l = 0)), 
+        axis.text.y = element_text(margin = margin(t = 0, r = 10, 
+                                                   b = 0, l = 0)), 
+        axis.title.y = element_text(margin = margin(t = 0, r = 10, 
+                                                    b = 0, l = 0))) +
+  labs(x = "Year of Health Violation", y = "Total Number of Rule Violations")
+
+plotly::ggplotly(health_viol_plot)
+```
+
+Prior to 2017, the majority of health-based violations in Texas appear to be stage 1 disinfectants & inorganic chemicals. After 2016, the majority of violations switched to stage 2 disinfectants & inorganic chemicals. Health-based violations peaked in 2017, but has decreased over time. 
+
+Maybe chat w/ EPA folks or do some research online??? 
+1991 stage 2 - maybe chat with Michael Pastino? (dw information systems branch manager)
+How much of this is just showing the history of SDWIS?
+
+## 3.3: What changes in water rates and MHI do we see in fragile systems? 
+```{r}
+# order of operations: 
+# filter pwsids to those that have been around for the entire time period of interest
+# populations, MHI, and water rates for census tracts through time (even when boundaries have changed !)
+# crosswalk data to pwids for each year (which might've not even existed at a certain time period...?) this also involves writing a whole new xwalk function for just a couple 
+# of variables 
+
+# summarize sdwis violation data by appropriate year bins 
+
+# -----
+# water rates: B25134 - only go back to 2021, and only in 1yr acs which
+# "The 1-year ACS provides data for geographies with populations of 65,000 and greater."
+# so it only has data for large counties
+# all_census_vars <- load_variables(2023, "acs1", cache = TRUE)
+
+census_vars <- c(total_pop = "B01003_001", 
+                 mhi = "B19013_001", 
+                 total_water = "B25134_003", 
+                 less_125 = "B25134_004", 
+                 between_125_249 = "B25134_005", 
+                 between_250_499 = "B25134_006", 
+                 between_500_749 = "B25134_007", 
+                  between_750_999 = "B25134_008", 
+                 over_1000 = "B25134_009")
+
+counties_2023 <- tidycensus::get_acs(
+  geography = "county", 
+  variables = census_vars, 
+  survey = "acs1",
+  year = 2023
+) 
+
+counties_2022 <- tidycensus::get_acs(
+  geography = "county", 
+  variables = census_vars, 
+  survey = "acs1",
+  year = 2022
+)
+
+counties_2021 <- tidycensus::get_acs(
+  geography = "county", 
+  variables = census_vars, 
+  survey = "acs1",
+  year = 2021
+)
+
+# quick combining for county data: 
+tx_2023 <- counties_2023 %>%
+  filter(grepl("^48", GEOID)) %>%
+  select(-moe) %>%
+  pivot_wider(., names_from = variable, values_from = estimate) %>%
+  mutate(acs1yr_year = "2023")
+tx_2022 <- counties_2022 %>%
+  filter(grepl("^48", GEOID)) %>%
+  select(-moe) %>%
+  pivot_wider(., names_from = variable, values_from = estimate) %>%
+  mutate(acs1yr_year = "2022")
+tx_2021 <- counties_2021 %>%
+  filter(grepl("^48", GEOID)) %>%
+  select(-moe) %>%
+  pivot_wider(., names_from = variable, values_from = estimate) %>%
+  mutate(acs1yr_year = "2021")
+# 2020 had a low response rate
+# yeah - can confirm we don't have water rate data prior to 2021
+# counties_2019 <- tidycensus::get_acs(
+#   geography = "county", 
+#   variables = census_vars, 
+#   survey = "acs1",
+#   year = 2019
+# )
+
+
+# calculating % of total population paying for water in each $ category: 
+all_rates <- bind_rows(tx_2023, tx_2022, tx_2021) %>%
+  mutate_at(vars(!c("GEOID", "NAME", "total_pop", 
+                    "mhi", "acs1yr_year", "total_water")), 
+            ~((./total_water)*100))
+
+# pivoting to long for plotting: 
+all_rates_long <- all_rates %>%
+  pivot_longer(., cols = less_125:over_1000) %>%
+  mutate(mhi_cat = case_when(
+    mhi < 40000 ~ "Less than $40,000", 
+    mhi >= 40000 & mhi < 60000 ~ "$40,000 - $59,999",
+    mhi >= 60000 & mhi < 80000 ~ "$60,000 - $79,999",
+    mhi >= 80000 & mhi < 100000 ~ "$80,000 - $99,999",
+    mhi >= 100000 & mhi < 120000 ~ "$100,000 - $120,000",
+    mhi >= 120000 ~ "Over $120,000"
+  ), 
+  mhi_acs = paste0(mhi_cat, acs1yr_year))
+
+# plotting: 
+ggplot(all_rates_long, aes(x = mhi_cat, y = value, 
+                           color = acs1yr_year, 
+                           fill = acs1yr_year, 
+                           group = mhi_acs)) + 
+  geom_point( alpha = 0.2, 
+              position = position_dodge(width = 0.75)) + 
+  geom_boxplot(alpha = 0.4, outliers = F) + 
+  facet_wrap(~name) + 
+  coord_flip() + 
+  epic_chart_theme + 
+  labs(y = "% of Rate Payers", 
+       x = "MHI Category")
+```
+
+
+```{r}
+# rates_barplot <- ggplot(all_rates_long, aes(x = value, y = mhi_cat, fill = name)) + 
+#   geom_bar(stat = "identity") + 
+#   # geom_smooth(se = F) + 
+#   facet_wrap(~acs1yr_year, ncol = 1) +
+#   epic_chart_theme +  
+#   labs(y = "% of Rate Payers", 
+#        x = "MHI")
+# 
+# plotly::ggplotly(rates_barplot) 
+
+# looking at counties where there is a high % of rate payers paying >750, 
+# but income is < 40,000
+low_mhi_high_rates <- all_rates_long %>%
+  filter(name %in% c("between_750_999", "over_1000") & mhi < 60000) %>%
+  pivot_wider(., names_from = name, values_from = value) %>%
+  mutate(total_750_1000 = (between_750_999 + over_1000))
+
+counties_of_interest <- unique(low_mhi_high_rates$NAME) 
+counties_tidy <- counties_of_interest %>%
+  gsub(" County, Texas", "", .)
+
+# which ones serve Starr county?
+starr_cws <- tx_xwalk %>% 
+  filter(county_served == "Starr") 
+starr_pwsid <- unique(starr_cws$pwsid)
+
+
+of_interest <- ggplot(low_mhi_high_rates, 
+                      aes(x = mhi, y = total_750_1000, 
+                          color = NAME, 
+                          text = NAME)) + 
+  geom_point() + 
+  facet_wrap(~acs1yr_year, ncol = 1) + 
+  labs(y = "% of Rate Payers Paying > $750 Annually", 
+       x = "MHI") + 
+  theme_minimal() 
+plotly::ggplotly(of_interest, tooltip = "NAME") 
+
+# TODO - calculate water rate burden 
+# calculate % change in water rate burden 
+```
+
+Counties where the median household income is less than $60,000 and the annual rate for water and sewer is greater than 750/year: `r counties_tidy`. Starr county, in particular, had counties where the MHI was less than 45,000 but nearly 40% of rate payers were spending more than 750/year for water and sewer. CWS that serve this county include: `r starr_pwsid`
+
+
+# 4.0: What are examples of success stories? 
+## 4.1: What are the trends [for this specific CWS] in terms of population, violations, water rates, and investments? 
+
+# 5.0 What are examples of cautionary tales?
+## 5.1: What are the trends [for this specific CWS] in terms of population, violations, water rates, and investments? 
+
