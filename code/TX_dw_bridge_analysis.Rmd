@@ -94,7 +94,7 @@ source("/Users/emmalitsai/TX-drinking-water/code/functions/state_sab_crosswalk_y
 ```
 
 # 1.0: What is the size of the opportunity?
-## 1.1: What is the number of Texans served by CWS that pull primarily from surface water?
+## 1.1: What is the number of Texans served by CWS?
 ```{r}
 # what source codes are we working with?
 # unique(tx_xwalk$primary_source_code)
@@ -147,9 +147,9 @@ assistance_stats <- tx_srf %>%
             mean_pf = dollar(mean(prin_forgive_amt)))
 
 ```
-Out of `r length(unique(tx_xwalk$pwsid))` CWS in Texas, `r length(unique(srf_funded$pwsid))` have received Drinking Water State Revolving Funds over 2009-2020. This reflects `r round((length(unique(srf_funded$pwsid))/length(unique(tx_xwalk$pwsid))*100), 2)`% of CWS in Texas. 
+Out of `r formatC(length(unique(tx_xwalk$pwsid)), format = "d", big.mark = ",")` CWS in Texas, `r length(unique(srf_funded$pwsid))` have received Drinking Water State Revolving Funds over 2009-2020. This reflects `r round((length(unique(srf_funded$pwsid))/length(unique(tx_xwalk$pwsid))*100), 2)`% of CWS in Texas. 
 
-Based on water system populations, systems that have been funded by DWSRF serve `r round(srf_funded_pop$funded_pop, 0)` people, which reflects `r round((srf_funded_pop$funded_pop / total_cws_pop)*100, 0)`% of the population served by CWS in Texas, and `r round((srf_funded_pop$funded_pop / tx_pop_total)*100, 0)`% of the total population in Texas. 
+Based on water system populations, systems that have been funded by DWSRF serve `r formatC(round(srf_funded_pop$funded_pop, 0), format = "d", big.mark = ",")` people, which reflects `r round((srf_funded_pop$funded_pop / total_cws_pop)*100, 0)`% of the population served by CWS in Texas, and `r round((srf_funded_pop$funded_pop / tx_pop_total)*100, 0)`% of the total population in Texas. 
 
 ```{r}
 # how has the amount of total assistance/year changed through time?
@@ -484,7 +484,7 @@ file_loc <- "/Users/emmalitsai/TX-drinking-water/data/raw/sdwa_download"
 ```
 
 ## 3.1: What changes do we see to population growth in fragile systems? 
-```{r}
+```{r fig.height = 9, fig.width = 10}
 # population growth through time, and ideally this would also include 
 # MHI 
 tx_xwalk_2010 <- aws.s3::s3read_using(st_read, 
@@ -583,7 +583,7 @@ leaflet() %>%
 
 Broadly, systems in suburban areas around cities have grown, while populations within cities have shrunk since 2010. Water systems located in NE Texas have generally exhibited population decline since 2010, along with more rural areas of Texas. 
 
-```{r}
+```{r fig.height = 9, fig.width = 10}
 mhi_pal <- colorBin(
   bins = c(-100, -50, -20, 0, 20, 100, 300),
   palette = c("#d73027", "#fc8d59", "white", "#d9ef8b", "#91cf60", "#1a9850", "darkgreen"),
@@ -617,7 +617,7 @@ leaflet() %>%
 
 Median household income (already adjusted for inflation) within CWS in Texas have broadly increased. There are some water systems located in mostly rural areas that have exhibited slight declines in MHI over the past decade. 
 
-```{r}
+```{r fig.height = 9, fig.width = 10}
 
 # looking at % change in population and % change in median household income: 
 leaflet() %>%
@@ -666,7 +666,7 @@ knitr::kable(table, caption = "Number of CWS in each Category")
 
 While most CWS exhibit positive MHI and growth over the past decade, there are ~836 CWS in TX where the population has grown over time, but the MHI has decreased. There are 490 that have decreased in both population and MHI over the course of the past decade - indicating the system may be serving less people and with lower income now than in 2010. 
 
-```{r}
+```{r fig.height = 9, fig.width = 10}
 # plotting 
 # ggplot(tx_decade, aes(x = pct_change_pop, y = pct_change_mhi)) + 
 #   geom_point() + 
@@ -717,7 +717,9 @@ Demographic data for CWS in TX are relatively similar across the study period. B
 
 
 ## 3.2: What changes in violations do we see in fragile systems? 
-```{r fig.height = 10, fig.width = 11}
+```{r fig.height = 9, fig.width = 10}
+file_loc <- "/Users/emmalitsai/TX-drinking-water/data/raw/sdwa_download"
+
 # reading in violations: 
 sdwa_viols <- read.csv(paste0(file_loc, "/SDWA_VIOLATIONS_ENFORCEMENT.csv")) %>%
   janitor::clean_names() 
@@ -777,7 +779,7 @@ Maybe chat w/ EPA folks or do some research online???
 How much of this is just showing the history of SDWIS?
 
 ## 3.3: What changes in water rates and MHI do we see in fragile systems? 
-```{r}
+```{r fig.height = 9, fig.width = 10}
 # order of operations: 
 # filter pwsids to those that have been around for the entire time period of interest
 # populations, MHI, and water rates for census tracts through time (even when boundaries have changed !)
@@ -869,22 +871,19 @@ all_rates_long <- all_rates %>%
   mhi_acs = paste0(mhi_cat, acs1yr_year))
 
 # plotting: 
-ggplot(all_rates_long, aes(x = mhi_cat, y = value, 
-                           color = acs1yr_year, 
-                           fill = acs1yr_year, 
-                           group = mhi_acs)) + 
-  geom_point( alpha = 0.2, 
-              position = position_dodge(width = 0.75)) + 
-  geom_boxplot(alpha = 0.4, outliers = F) + 
-  facet_wrap(~name) + 
-  coord_flip() + 
-  epic_chart_theme + 
-  labs(y = "% of Rate Payers", 
-       x = "MHI Category")
-```
+# ggplot(all_rates_long, aes(x = mhi_cat, y = value, 
+#                            color = acs1yr_year, 
+#                            fill = acs1yr_year, 
+#                            group = mhi_acs)) + 
+#   geom_point( alpha = 0.2, 
+#               position = position_dodge(width = 0.75)) + 
+#   geom_boxplot(alpha = 0.4, outliers = F) + 
+#   facet_wrap(~name) + 
+#   coord_flip() + 
+#   epic_chart_theme + 
+#   labs(y = "% of Rate Payers", 
+#        x = "MHI Category")
 
-
-```{r}
 # rates_barplot <- ggplot(all_rates_long, aes(x = value, y = mhi_cat, fill = name)) + 
 #   geom_bar(stat = "identity") + 
 #   # geom_smooth(se = F) + 
@@ -929,10 +928,523 @@ plotly::ggplotly(of_interest, tooltip = "NAME")
 
 Counties where the median household income is less than $60,000 and the annual rate for water and sewer is greater than 750/year: `r counties_tidy`. Starr county, in particular, had counties where the MHI was less than 45,000 but nearly 40% of rate payers were spending more than 750/year for water and sewer. CWS that serve this county include: `r starr_pwsid`
 
+```{r fig.height = 9, fig.width = 10}
+# can I calculate mean water rates?
+all_rates_calc <- bind_rows(tx_2023, tx_2022, tx_2021) 
+
+# one way to do this is multiply the midpoint of each bin by # of people, 
+# sum that information, and then divide by total number of people 
+# NOTE - this is not perfect! and could be improved! 
+all_rates_calc <- all_rates_calc %>%
+  rowwise() %>%
+  mutate(
+    # finding total $ contributed by each bin using the bin's midpoint:
+    less_125_mp = less_125 *62,
+    between_125_249_mp = between_125_249*187, 
+    between_250_499_mp = between_250_499 *374.5,
+    between_500_749_mp = between_500_749*624.5, 
+    between_750_999_mp = between_750_999*874.5, 
+    # NOTE - assuming "midpoint" for >100 cat is just a half of a full
+    # bin above 1000
+    over_1000_mp = over_1000*1124.5,
+    # summing total amount: 
+    total = sum(less_125_mp, between_125_249_mp, between_250_499_mp,
+                between_500_749_mp, between_750_999_mp, over_1000_mp), 
+    # diving by total people to get a ROUGH mean
+    mean_rate = total/total_water, 
+    # finding pct of mhi spent on water annually
+    rate_div_mhi = (mean_rate/mhi)*100
+  )
+
+# combien with census geos: 
+tx_county_geo <- tx_county_pop %>%
+  select(NAME)
+
+all_rates_geo <- all_rates_calc %>%
+  left_join(tx_county_geo) %>%
+  st_as_sf() 
+
+# plotting: 
+rate_pal <- colorNumeric(
+  palette = cont_palette(5),
+  domain = all_rates_geo$rate_div_mhi)
+
+leaflet() %>%
+    addProviderTiles(providers$CartoDB.Positron, 
+                   group = "Toner Lite") %>%
+    addPolygons(data = tx_county_pop,
+              # slight opacity
+              fillOpacity = 0.2,
+              color = "gray",
+              weight = 1, 
+              smoothFactor = 0) %>%
+  addPolygons(data = all_rates_geo[all_rates_geo$acs1yr_year == "2023",],
+              fillColor = ~rate_pal(rate_div_mhi),
+              # slight opacity
+              fillOpacity = 0.8,
+              color = "white",
+              weight = 1, 
+              smoothFactor = 0, 
+              group = "2023", 
+              label = paste0("County: ", all_rates_geo[all_rates_geo$acs1yr_year == "2023",]$NAME, 
+                             "; % MHI spent on Water & Sewer : ",
+                            round(all_rates_geo[all_rates_geo$acs1yr_year == "2023",]$rate_div_mhi,
+                                  3), "%")) %>%
+    addPolygons(data = all_rates_geo[all_rates_geo$acs1yr_year == "2022",],
+              fillColor = ~rate_pal(rate_div_mhi),
+              # slight opacity
+              fillOpacity = 0.8,
+              color = "white",
+              weight = 1, 
+              smoothFactor = 0, 
+              group = "2022", 
+              label = paste0("County: ", all_rates_geo[all_rates_geo$acs1yr_year == "2022",]$NAME, 
+                             "; % MHI spent on Water & Sewer : ",
+                            round(all_rates_geo[all_rates_geo$acs1yr_year == "2022",]$rate_div_mhi,
+                                  3), "%")) %>%
+      addPolygons(data = all_rates_geo[all_rates_geo$acs1yr_year == "2021",],
+              fillColor = ~rate_pal(rate_div_mhi),
+              # slight opacity
+              fillOpacity = 0.8,
+              color = "white",
+              weight = 1, 
+              smoothFactor = 0, 
+              group = "2021", 
+              label = paste0("County: ", all_rates_geo[all_rates_geo$acs1yr_year == "2021",]$NAME, 
+                             "; % MHI spent on Water & Sewer : ",
+                            round(all_rates_geo[all_rates_geo$acs1yr_year == "2021",]$rate_div_mhi, 3), "%")) %>%
+  addLegend("bottomright",
+            pal = rate_pal,
+            values = all_rates_geo$rate_div_mhi,
+            # if working with money or percentages, use the 
+            # follow label formats: 
+            # labFormat = labelFormat(prefix = "$"),
+            labFormat = labelFormat(prefix = "%"),
+            title = "% MHI spent on Water",
+            opacity = 1) %>% 
+  addLayersControl(baseGroups = c('2023', '2022', "2021"),
+                   options = layersControlOptions(collapsed = FALSE),
+                   position = 'bottomleft')
+```
+
+Across the years and counties in which we have data, counties closer to the southern border appear to spend a larger percentage of their income of water in comparison to the rest of the counties included in our study. Starr county had the largest percentage in our study, where 17% of income was going towards sewer and water in 2021. 
+
+
+```{r fig.height = 9, fig.width = 10}
+# plotting by % change from 2021 to 2023 
+all_rates_geo_simple <- all_rates_geo %>%
+  select(NAME, acs1yr_year, rate_div_mhi) %>%
+  pivot_wider(., names_from = acs1yr_year, values_from = rate_div_mhi) %>%
+  mutate(pct_change =  100*((`2023` - `2021`)/`2023`))
+     
+# plotting: 
+pct_mhi_rate_pal <- colorBin(
+  bins = c(-40, -20, -5, 0, 5, 20),
+  palette = rev(c("#d73027", "#fc8d59", "white", "#d9ef8b", "#91cf60")),
+  domain = all_rates_geo_simple$pct_change)
+
+leaflet() %>%
+    addProviderTiles(providers$CartoDB.Positron, 
+                   group = "Toner Lite") %>%
+  addPolygons(data = tx_county_pop,
+              # slight opacity
+              fillOpacity = 0.2,
+              color = "gray",
+              weight = 1, 
+              smoothFactor = 0) %>%
+  addPolygons(data = all_rates_geo_simple,
+              fillColor = ~pct_mhi_rate_pal(pct_change),
+              # slight opacity
+              fillOpacity = 0.8,
+              stroke = T, 
+              color = "black",
+              opacity = 0.2, 
+              weight = 1,
+              # smoothFactor = 0.5, 
+              label = paste0("County: ", all_rates_geo_simple$NAME, 
+                             "; % change: ",
+                             round(all_rates_geo_simple$pct_change, 3))) %>%
+  addLegend("bottomright",
+            pal = pct_mhi_rate_pal,
+            values = all_rates_geo_simple$pct_change,
+            # if working with money or percentages, use the 
+            # follow label formats: 
+            # labFormat = labelFormat(prefix = "$"),
+            labFormat = labelFormat(prefix = "%"),
+            title = "% Change in % of Income Spent on Water",
+            opacity = 1)
+```
+
+When looking at the percentage in the % of income spent on water from 2021 - 2023, most counties in our study period decreased over time, indicating that the relative financial burden of water on annual income has decreased. There are a few counties where financial burden has increased, particularly in more rural areas in NE Texas. The largest % change in our study period was Tom Green County with an increase of 18.6%. 
+
 
 # 4.0: What are examples of success stories? 
 ## 4.1: What are the trends [for this specific CWS] in terms of population, violations, water rates, and investments? 
 
+Looking the county collection of pwsids that have received funding 
+```{r fig.height = 9, fig.width = 10}
+# grabbing demographic and socioeconomic trends - 2010, 2015, 2020
+# head(tx_decade)
+# # funding data - 2009, 2020
+# head(tx_srf)
+# violation data 
+viol_summary <- tx_viol_rulecode %>%
+  mutate(start_date = as.Date(viol_first_reported_date, 
+                              tryFormats = c("%m/%d/%Y")), 
+         start_year = year(start_date)) %>%
+  filter(is_health_based_ind == "Y") %>%
+  group_by(pwsid, start_year) %>%
+  summarize(total_health_viols = n())
+
+# ok let's just zoom in on one pwsid and look at trends over time -
+# ideally one that has received funding around 2015ish 
+
+# looking at pwsids in a particular county: 
+county <- "Lubbock"
+pwsids_county <- app_data_ws_info %>%
+  filter(county_served == county)
+# grabbing rates: 
+pwsid_rates <- all_rates_calc %>% 
+  filter(NAME ==  paste0(county, " County, Texas"))
+# grabbing demographic info 
+pwsid_demo <- tx_decade %>% 
+  filter(pwsid %in% pwsids_county$pwsid)
+# SRF funding history
+pwsid_srf <- tx_srf %>% 
+  filter(pwsid %in% pwsids_county$pwsid) %>%
+  select(pwsid, year, assistance_amt, prin_forgive_amt) %>%
+  group_by(pwsid, year) %>%
+  summarize(assistance_amt = sum(assistance_amt), 
+            prin_forgive_amt = sum(prin_forgive_amt))
+# violation history: 
+pwsid_viol <- viol_summary %>%
+  filter(pwsid %in% pwsids_county$pwsid) %>%
+  filter(start_year > 2005) %>%
+  mutate(start_year = as.character(start_year)) 
+
+# ok gotta reorg to see all of this information: 
+pwsid_demo_long <- pwsid_demo %>%
+  select(pwsid, estimate_total_pop_2010, estimate_mhi_2010_inf_adj, 
+         estimate_total_pop_2015, estimate_mhi_2015_inf_adj, estimate_mhi_2020, 
+         estimate_total_pop_2020) %>%
+  pivot_longer(., cols = estimate_total_pop_2010:estimate_total_pop_2020) %>%
+  mutate(year = case_when(
+    grepl("2010", name) ~ "2010", 
+    grepl("2015", name) ~ "2015", 
+    TRUE ~ "2020"
+  ), 
+  demo = case_when(
+    grepl("pop", name) ~ "total_pop", 
+    TRUE ~ "mhi"
+  )) %>%
+  select(-name) %>%
+  pivot_wider(., names_from = demo, values_from = value) 
+
+# adding violations: 
+pwsid_demo_viol <- merge(pwsid_demo_long, pwsid_viol, 
+                         by.x = c("pwsid", "year"), 
+                         by.y = c("pwsid", "start_year"), all = T)
+
+# adding srf: 
+pwsid_profile <- merge(pwsid_demo_viol, pwsid_srf,
+                       by = c("pwsid", "year"), all = T) 
+
+pwsid_profile_long <- pwsid_profile %>% 
+  pivot_longer(., cols = total_pop:prin_forgive_amt) %>%
+  # just looking at ones that have received funding 
+  filter(pwsid %in% pwsid_srf$pwsid) %>%
+  mutate(year = as.numeric(year))
+
+# looking at multiple pwsids for a particualar county: 
+pwsid_plot <- ggplot(pwsid_profile_long, aes(x = year, y = value, 
+                               color = pwsid, group = pwsid)) + 
+  geom_smooth(se = F)+ 
+  geom_point() + 
+  facet_wrap(~name, scales = "free_y", ncol = 1) + 
+  epic_chart_theme + 
+  ggtitle(paste0("Utilities Funded in ", county, " County")) + 
+  theme_minimal() + 
+  theme(legend.position = "right", 
+        text = element_text(size = 13), 
+        legend.text = element_text(size = 10), 
+        legend.title = element_text(size = 11), 
+        axis.text.x = element_text(margin = margin(t = 10, r = 0, 
+                                                   b = 0, l = 0)), 
+        axis.title.x = element_text(margin = margin(t = 10, r = 0, 
+                                                    b = 0, l = 0)), 
+        axis.text.y = element_text(margin = margin(t = 0, r = 10, 
+                                                   b = 0, l = 0)), 
+        axis.title.y = element_text(margin = margin(t = 0, r = 10, 
+                                                    b = 0, l = 0))) +
+  labs(x = "Year", y = "Value")
+ggplotly(pwsid_plot)
+```
+
+This figure can be used for looking at overall trends for utilities serving a particular county. 
+
+Zooming in on some pwsids: 
+```{r fig.height = 9, fig.width = 10}
+# looking at pwsids in a particular county: 
+county <- "Tarrant"
+
+pwsids_county <- app_data_ws_info %>%
+  filter(county_served == county)
+# grabbing rates: 
+pwsid_rates <- all_rates_calc %>% 
+  filter(NAME ==  paste0(county, " County, Texas"))
+# grabbing demographic info 
+pwsid_demo <- tx_decade %>% 
+  filter(pwsid %in% pwsids_county$pwsid)
+# SRF funding history
+pwsid_srf <- tx_srf %>% 
+  filter(pwsid %in% pwsids_county$pwsid) %>%
+  select(pwsid, year, assistance_amt, prin_forgive_amt) %>%
+  group_by(pwsid, year) %>%
+  summarize(assistance_amt = sum(assistance_amt), 
+            prin_forgive_amt = sum(prin_forgive_amt))
+# violation history: 
+pwsid_viol <- viol_summary %>%
+  filter(pwsid %in% pwsids_county$pwsid) %>%
+  filter(start_year > 2005) %>%
+  mutate(start_year = as.character(start_year)) 
+
+# ok gotta reorg to see all of this information: 
+pwsid_demo_long <- pwsid_demo %>%
+  select(pwsid, estimate_total_pop_2010, estimate_mhi_2010_inf_adj, 
+         estimate_total_pop_2015, estimate_mhi_2015_inf_adj, estimate_mhi_2020, 
+         estimate_total_pop_2020) %>%
+  pivot_longer(., cols = estimate_total_pop_2010:estimate_total_pop_2020) %>%
+  mutate(year = case_when(
+    grepl("2010", name) ~ "2010", 
+    grepl("2015", name) ~ "2015", 
+    TRUE ~ "2020"
+  ), 
+  demo = case_when(
+    grepl("pop", name) ~ "total_pop", 
+    TRUE ~ "mhi"
+  )) %>%
+  select(-name) %>%
+  pivot_wider(., names_from = demo, values_from = value) 
+
+# adding violations: 
+pwsid_demo_viol <- merge(pwsid_demo_long, pwsid_viol, 
+                         by.x = c("pwsid", "year"), 
+                         by.y = c("pwsid", "start_year"), all = T)
+
+# adding srf: 
+pwsid_profile <- merge(pwsid_demo_viol, pwsid_srf,
+                       by = c("pwsid", "year"), all = T) 
+
+# long format for plotting: 
+pwsid_profile_long <- pwsid_profile %>% 
+  pivot_longer(., cols = total_pop:prin_forgive_amt) %>%
+  # just looking at ones that have received funding 
+  filter(pwsid %in% pwsid_srf$pwsid) %>%
+  mutate(year = as.numeric(year))
+
+# zooming in a particular pwsid: 
+pwsid_i <- "TX2200069"
+
+pwsid_focus <- pwsid_profile_long %>% 
+  filter(pwsid == pwsid_i) %>%
+  filter(!(name %in% c("assistance_amt", "prin_forgive_amt")))
+pwsid_srf_i <- pwsid_srf %>% 
+  filter(pwsid == pwsid_i)
+
+ggplot(pwsid_focus, aes(x = year, y = value, group = pwsid)) + 
+  geom_smooth(se = F)+ 
+  geom_point() + 
+  geom_vline(xintercept = unique(pwsid_srf_i$year),
+             color = "red",
+             size=1, 
+             linetype = "dashed") + 
+  facet_wrap(~name, scales = "free_y", ncol = 1) + 
+  epic_chart_theme + 
+  ggtitle(paste0("Trends for ", pwsid_i, ", serving ", county, " County"))
+```
+
+Red dashed line indicates the year in which the utility received funding. For this particular utility, violations dipped after the utility received funding, populations continued to increase, and MHI started increasing since 2015. Utilities serving Tarrant county have also exhibited a decrease in the % of income spent on MHI from 2021-2023, indicating either lower rates or higher MHI over that time period. 
+
+```{r fig.height = 9, fig.width = 10}
+county <- "Lubbock"
+pwsid_i <- "TX1520067"
+
+pwsids_county <- app_data_ws_info %>%
+  filter(county_served == county)
+# grabbing rates: 
+pwsid_rates <- all_rates_calc %>% 
+  filter(NAME ==  paste0(county, " County, Texas"))
+# grabbing demographic info 
+pwsid_demo <- tx_decade %>% 
+  filter(pwsid %in% pwsids_county$pwsid)
+# SRF funding history
+pwsid_srf <- tx_srf %>% 
+  filter(pwsid %in% pwsids_county$pwsid) %>%
+  select(pwsid, year, assistance_amt, prin_forgive_amt) %>%
+  group_by(pwsid, year) %>%
+  summarize(assistance_amt = sum(assistance_amt), 
+            prin_forgive_amt = sum(prin_forgive_amt))
+# violation history: 
+pwsid_viol <- viol_summary %>%
+  filter(pwsid %in% pwsids_county$pwsid) %>%
+  filter(start_year > 2005) %>%
+  mutate(start_year = as.character(start_year)) 
+
+# ok gotta reorg to see all of this information: 
+pwsid_demo_long <- pwsid_demo %>%
+  select(pwsid, estimate_total_pop_2010, estimate_mhi_2010_inf_adj, 
+         estimate_total_pop_2015, estimate_mhi_2015_inf_adj, estimate_mhi_2020, 
+         estimate_total_pop_2020) %>%
+  pivot_longer(., cols = estimate_total_pop_2010:estimate_total_pop_2020) %>%
+  mutate(year = case_when(
+    grepl("2010", name) ~ "2010", 
+    grepl("2015", name) ~ "2015", 
+    TRUE ~ "2020"
+  ), 
+  demo = case_when(
+    grepl("pop", name) ~ "total_pop", 
+    TRUE ~ "mhi"
+  )) %>%
+  select(-name) %>%
+  pivot_wider(., names_from = demo, values_from = value) 
+
+# adding violations: 
+pwsid_demo_viol <- merge(pwsid_demo_long, pwsid_viol, 
+                         by.x = c("pwsid", "year"), 
+                         by.y = c("pwsid", "start_year"), all = T)
+
+# adding srf: 
+pwsid_profile <- merge(pwsid_demo_viol, pwsid_srf,
+                       by = c("pwsid", "year"), all = T) 
+
+# long format for plotting: 
+pwsid_profile_long <- pwsid_profile %>% 
+  pivot_longer(., cols = total_pop:prin_forgive_amt) %>%
+  # just looking at ones that have received funding 
+  filter(pwsid %in% pwsid_srf$pwsid) %>%
+  mutate(year = as.numeric(year))
+
+# zooming in a particular pwsid: 
+pwsid_focus <- pwsid_profile_long %>% 
+  filter(pwsid == pwsid_i) %>%
+  filter(!(name %in% c("assistance_amt", "prin_forgive_amt")))
+pwsid_srf_i <- pwsid_srf %>% 
+  filter(pwsid == pwsid_i)
+
+ggplot(pwsid_focus, aes(x = year, y = value, group = pwsid)) + 
+  geom_smooth(se = F)+ 
+  geom_point() + 
+  geom_vline(xintercept = unique(pwsid_srf_i$year),
+             color = "red",
+             size=1, 
+             linetype = "dashed") + 
+  facet_wrap(~name, scales = "free_y", ncol = 1) + 
+  epic_chart_theme + 
+  ggtitle(paste0("Trends for ", pwsid_i, ", serving ", county, " County"))
+```
+
+Red dashed line indicates the year in which the utility received funding. For this particular utility, violations dipped after the utility received funding, and MHI and populations continued to increase. Utilities serving Lubbock county have exhibited an increase in the % of income spent on MHI from 2021-2023, indicating either higher rates or lower MHI over that time period. 
+
+
 # 5.0 What are examples of cautionary tales?
 ## 5.1: What are the trends [for this specific CWS] in terms of population, violations, water rates, and investments? 
+```{r fig.height = 9, fig.width = 10}
+# zooming in on utilities that have been declining in pop and MHI 
+# and counties where financial burden of water have been increasing: 
+pwsid_caution <- cws_of_interest %>% 
+  filter(Category %in% c("Pop & MHI Decreasing", 
+                         "Pop Growing, MHI Decreasing")) %>% 
+  mutate(county_name = paste0(county_served, " County, Texas")) 
 
+# which ones are serving counties where financial burden is increasing?
+county_caution <- all_rates_geo_simple %>% 
+  filter(NAME %in% pwsid_caution$county_name) %>%
+  filter(pct_change > 0)
+
+# these utilites not only have declining populations and mhi, but financial 
+# burden of water is increasing; 
+pwsid_decdemo_rates <- pwsid_caution %>%
+  filter(county_name %in% county_caution$NAME)
+
+# grabbing violations for these pwsids: 
+pwsid_viol_caution <- viol_summary %>%
+  filter(pwsid %in% pwsid_decdemo_rates$pwsid) %>%
+  group_by(pwsid, start_year) %>%
+  filter(start_year > 2005) %>%
+  summarize(total_health_viols = sum(total_health_viols))
+
+# SRF funding history
+pwsid_srf_caution <- tx_srf %>% 
+  filter(pwsid %in% pwsid_decdemo_rates$pwsid) %>%
+  select(pwsid, year, assistance_amt, prin_forgive_amt) %>%
+  group_by(pwsid, year) %>%
+  summarize(assistance_amt = sum(assistance_amt), 
+            prin_forgive_amt = sum(prin_forgive_amt))
+
+
+# what has funding looked like?
+pwsid_demo_long_c <- pwsid_decdemo_rates %>%
+  select(pwsid, county_name, Category, 
+         estimate_total_pop_2010, estimate_mhi_2010_inf_adj, 
+         estimate_total_pop_2015, estimate_mhi_2015_inf_adj, estimate_mhi_2020, 
+         estimate_total_pop_2020) %>%
+  pivot_longer(., cols = estimate_total_pop_2010:estimate_total_pop_2020) %>%
+  mutate(year = case_when(
+    grepl("2010", name) ~ "2010", 
+    grepl("2015", name) ~ "2015", 
+    TRUE ~ "2020"
+  ), 
+  demo = case_when(
+    grepl("pop", name) ~ "total_pop", 
+    TRUE ~ "mhi"
+  )) %>%
+  select(-name) %>%
+  pivot_wider(., names_from = demo, values_from = value) 
+
+# adding violations: 
+pwsid_demo_viol_c <- merge(pwsid_demo_long_c, pwsid_viol_caution, 
+                         by.x = c("pwsid", "year"), 
+                         by.y = c("pwsid", "start_year"), all = T)
+
+# adding srf: 
+pwsid_profile_c <- merge(pwsid_demo_viol_c, pwsid_srf_caution,
+                       by = c("pwsid", "year"), all = T) %>%
+  as.data.frame() %>%
+  select(-starts_with("geom")) %>% 
+  mutate(year = as.numeric(year))
+
+pwsid_profile_c_long <- pivot_longer(pwsid_profile_c, 
+                                     cols = total_pop:prin_forgive_amt)
+
+# plottin'
+of_caution <- ggplot(pwsid_profile_c_long, aes(x = year, y = value, 
+                                 color = pwsid,
+                                 group = pwsid)) + 
+  geom_smooth(se = F)+ 
+  geom_point() + 
+  # geom_vline(xintercept = unique(pwsid_srf_i$year),
+  #            color = "red",
+  #            size=1, 
+  #            linetype = "dashed") + 
+  facet_wrap(~name, scales = "free_y") + 
+  epic_chart_theme + 
+  ggtitle(paste0("Trends for Utilities in Possible Need for Support")) + 
+  theme_minimal() + 
+  theme(legend.position = "right", 
+        text = element_text(size = 13), 
+        legend.text = element_text(size = 10), 
+        legend.title = element_text(size = 11), 
+        axis.text.x = element_text(margin = margin(t = 10, r = 0, 
+                                                   b = 0, l = 0)), 
+        axis.title.x = element_text(margin = margin(t = 10, r = 0, 
+                                                    b = 0, l = 0)), 
+        axis.text.y = element_text(margin = margin(t = 0, r = 10, 
+                                                   b = 0, l = 0)), 
+        axis.title.y = element_text(margin = margin(t = 0, r = 10, 
+                                                    b = 0, l = 0))) +
+  labs(x = "Year", y = "Value")
+
+ggplotly(of_caution)
+```
+
+Chart above shows utilies where populations and/or MHI have been decreasing from 2010 - 2020, and serve a county in which the relative annual financial burden of water has increased from 2021 - 2023 (this of course limits our universe to only counties where we had rate data). Of utilities that meet these criteria, only 6 utilities have recieved funding. 
