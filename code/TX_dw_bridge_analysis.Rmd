@@ -729,42 +729,61 @@ Demographic data for CWS in TX are relatively similar across the study period. B
 
 ## 3.2: What changes in violations do we see in fragile systems? 
 ```{r fig.height = 9, fig.width = 10}
+# working directory: - using a direct file path to knit the rmd 
 file_loc <- "/Users/emmalitsai/TX-drinking-water/data/raw/sdwa_download"
 
 # reading in violations: 
+# NOTE - there are quite a few rows w/o violation_ids, but enforcement_ids
 sdwa_viols <- read.csv(paste0(file_loc, "/SDWA_VIOLATIONS_ENFORCEMENT.csv")) %>%
   janitor::clean_names() 
+
+# filtering for pwsids located in our CWS list: 
 tx_viols <- sdwa_viols %>% 
+  # tx_xwalk dataframe contails all CWS in TX (already filtered using SDWIS)
   filter(pwsid %in% tx_xwalk$pwsid) %>%
   mutate(rule_code = as.character(rule_code))
 
-# violation codes:
+# merging in rule family reference codes:
 sdwa_codes <- read.csv(paste0(file_loc, "/SDWA_REF_CODE_VALUES.csv")) %>%
   janitor::clean_names() 
-rule_codes <- sdwa_codes %>% 
+rule_family_codes <- sdwa_codes %>% 
   filter(value_type %in% c("RULE_FAMILY_CODE")) %>%
   rename(rule = value_description)
 
-# merging by rule code
-tx_viol_rulecode <- merge(tx_viols, rule_codes, 
+# adding rule code: 
+tx_viol_rulecode <- merge(tx_viols, rule_family_codes, 
                           by.x = "rule_family_code", 
                           by.y = "value_code", 
-                          all.x = T)
+                          all.x = T) %>%
+### START OF STEPS FROM EMAIL: ################################################
+  # STEP ONE: concatenate PWSID and violation_id to create a unique indentifier: 
+  mutate(pwsid_viol_id = paste0(pwsid, "-", violation_id))
 
-# grabbing summaries by rule code & creating stacked bar plot: 
-health_viol <- tx_viol_rulecode %>%
-  mutate(start_date = as.Date(viol_first_reported_date, 
-                              tryFormats = c("%m/%d/%Y")), 
-         start_year = year(start_date)) %>%
-  filter(is_health_based_ind == "Y") %>%
+# STEP TWO: remove duplicates, keep distinct records using unique ID from 
+# step 1: 
+tx_viol_filt <- tx_viol_rulecode %>%
+  distinct(pwsid_viol_id, .keep_all = T) %>%
+# STEP THREE: filter for health viols- data has already been filtered for 
+# CWS in TX
+  filter(is_health_based_ind == "Y")
+
+# STEP FOUR: group by compliance year, rulecode, and summarize totals: 
+tx_viol_rule_summary <- tx_viol_filt %>%
+  # converting to compl begin date to date format, and grabbing year for 
+  # grouping: 
+  mutate(compl_begin_date = as.Date(compl_per_begin_date, 
+                                    tryFormats = c("%m/%d/%Y")), 
+         start_year = year(compl_begin_date)) %>%
+  # grouping: 
   group_by(start_year, rule) %>%
-  summarize(total = length(unique(violation_id)))
+  summarize(total = length(unique(pwsid_viol_id)))
 
-health_viol_plot <- ggplot(health_viol, aes(x = start_year, y = total, 
+# plotting: 
+health_viol_plot <- ggplot(tx_viol_rule_summary, aes(x = start_year, y = total, 
                         fill = rule)) + 
   geom_bar(stat = "identity") + 
   scale_fill_manual(values = cat_palette(11), 
-                     name = "") +
+                    name = "") +
   theme_minimal() + 
   theme(legend.position = "right", 
         text = element_text(size = 13), 
@@ -779,16 +798,55 @@ health_viol_plot <- ggplot(health_viol, aes(x = start_year, y = total,
         axis.title.y = element_text(margin = margin(t = 0, r = 10, 
                                                     b = 0, l = 0))) +
   labs(x = "Year of Health Violation", y = "Total Number of Rule Violations")
-
 plotly::ggplotly(health_viol_plot)
 # write.csv(health_viol, "./data/raw/tx_cws_rule_viols.csv")
 ```
 
-Prior to 2017, the majority of health-based violations in Texas appear to be stage 1 disinfectants & inorganic chemicals. After 2016, the majority of violations switched to stage 2 disinfectants & inorganic chemicals. Health-based violations peaked in 2017, but has decreased over time. 
+Prior to 2015, the majority of health-based violations in Texas appear to be inorganic chemicals. After 2015, the majority of violations switched to stage 2 disinfectants & inorganic chemicals. Health-based violations peaked in 2015, but has decreased over time. 
 
-Maybe chat w/ EPA folks or do some research online??? 
-1991 stage 2 - maybe chat with Michael Pastino? (dw information systems branch manager)
-How much of this is just showing the history of SDWIS?
+What do the total number of health-based violations since 2010 look like spatially?
+```{r fig.height = 9, fig.width = 10}
+pwsid_viol_summary <- tx_viol_filt %>%
+  # converting to compl begin date to date format, and grabbing year for 
+  # grouping: 
+  mutate(compl_begin_date = as.Date(compl_per_begin_date, 
+                                    tryFormats = c("%m/%d/%Y")), 
+         start_year = year(compl_begin_date)) %>%
+  # grouping: 
+  filter(start_year >= 2010) %>%
+  group_by(pwsid) %>%
+  summarize(total = length(unique(pwsid_viol_id))) %>%
+  left_join(., tx_geoms, by = "pwsid") %>%
+  st_as_sf()
+
+# plotting 
+viol_pal <- colorBin(
+  bins = c(0, 5, 10, 50, 100, 500),
+  palette = cont_palette(8),
+  domain = pwsid_viol_summary$total)
+
+leaflet() %>%
+    addProviderTiles(providers$CartoDB.Positron, 
+                   group = "Toner Lite") %>%
+  addPolygons(data = pwsid_viol_summary,
+           fillColor = ~viol_pal(total),
+              # slight opacity
+              fillOpacity = 0.8,
+              stroke = T, 
+              color = "black",
+              opacity = 0.2, 
+              weight = 1,
+              # smoothFactor = 0.5, 
+              label = paste0("pwsid: ", pwsid_viol_summary$pwsid, 
+                             "; Health Violations since 2010 : ",
+                             pwsid_viol_summary$total)) %>%
+  addLegend("bottomright",
+            pal = viol_pal,
+            values = pwsid_viol_summary$total,
+            title = "Health Violations since 2010",
+            opacity = 1)
+```
+
 
 ## 3.3: What changes in water rates and MHI do we see in fragile systems? 
 ```{r fig.height = 9, fig.width = 10}
@@ -1116,13 +1174,14 @@ tx_county_rates_all <- merge(tx_county, tx_county_rates, all.y = T,
 
 
 # grabbing violation by pwsid and year: 
-pwsid_viol_summary <- tx_viol_rulecode %>%
-  mutate(start_date = as.Date(viol_first_reported_date, 
-                              tryFormats = c("%m/%d/%Y")), 
-         start_year = year(start_date)) %>%
-  filter(is_health_based_ind == "Y") %>%
+pwsid_viol_summary <- tx_viol_filt %>%
+  # converting to compl begin date to date format, and grabbing year for 
+  # grouping: 
+  mutate(compl_begin_date = as.Date(compl_per_begin_date, 
+                                    tryFormats = c("%m/%d/%Y")), 
+         start_year = year(compl_begin_date)) %>%
   group_by(pwsid, start_year) %>%
-  summarize(total_health_viols = length(unique(violation_id))) %>%
+  summarize(total_health_viols = length(unique(pwsid_viol_id))) %>%
   rename(year = start_year)
 
 # violations and water rates are the only two datasets that MAY overlap 
@@ -1229,7 +1288,7 @@ county_plot <- ggplot(county_trends, aes(x = year, y = value,
 ggplotly(county_plot)
 ``` 
 
-In this interactive plot, you're seeing trends in median household income, health violations since 2000, and population trends for CWS that serve Jefferson County. CWS plotted on the left have not received SRF funds, and those plotting on the right have received SRF funds. Jefferson county, as indicated earlier, is a county where the realtive financial burden of water has increased from 2021 - 2023. Let's take a closer look at the CWS that have received funding: 
+In this interactive plot, you're seeing trends in median household income, health violations since 2000, and population trends for CWS that serve Jefferson County. CWS plotted on the left have not received SRF funds, and those plotting on the right have received SRF funds. Jefferson county, as indicated earlier, is a county where the relative financial burden of water has increased from 2021 - 2023. Let's take a closer look at the CWS that have received funding: 
 
 ```{r fig.height = 9, fig.width = 10}
 funded_county <- county_trends %>%
@@ -1273,9 +1332,9 @@ jeff_county <- ggplot(funded_county_filter, aes(x = year, y = value,
 ggplotly(jeff_county)
 ```
 
-Here, we can take a closer look at CWS that have received funding in Jefferson County, Texas. Colored dashed lines indicate the year in which a particular CWS received funding. Of the four plotted here, TX1230009 serves the largest population with the lowest MHI of ~35k. Based on our county-level rate data, the relative financial burdern of water in Jefferson county has increased from 2021 to 2023. While health-based violations have been relatively low through time, the SRF funding this CWS received in 2015 may help support this CWS' large (and growing) but relatively low income community. 
+Here, we can take a closer look at CWS that have received funding in Jefferson County, Texas. Colored dashed lines indicate the year in which a particular CWS received funding. Of the four plotted here, TX1230009 serves the largest population with the lowest MHI of ~35k. Based on our county-level rate data, the relative financial burden of water in Jefferson county has increased from 2021 to 2023. While health-based violations have been relatively low through time, the SRF funding this CWS received in 2015 may help support this CWS' large (and growing) but relatively low income community. 
 
-Zooming in on CWS in a differen county: 
+Zooming in on CWS in a different county: 
 ```{r fig.height = 9, fig.width = 10}
 # looking at pwsids in a particular county: 
 
@@ -1355,7 +1414,7 @@ tarrant_county <- ggplot(funded_county_filter, aes(x = year, y = value,
 ggplotly(tarrant_county)
 ```
 
-The colored dashed line indicates the year in which the utility received funding. For TX2200069, violations dipped after the utility received funding, populations continued to increase, and MHI started increasing since 2015. Utilities serving Tarrant county have also exhibited a decrease in the % of income spent on MHI from 2021-2023, indicating either lower rates or higher MHI over that time period. 
+The colored dashed line indicates the year in which the utility received funding. For TX2200069, violations dipped after the utility received funding (no reported violations since 2017), populations continued to increase, and MHI started increasing since 2015. Utilities serving Tarrant county have also exhibited a decrease in the % of income spent on MHI from 2021-2023, indicating either lower rates or higher MHI over that time period. 
 
 
 # 5.0 What are examples of cautionary tales?
@@ -1410,8 +1469,7 @@ caution_plot <- ggplot(caution_trends, aes(x = year, y = value,
 ggplotly(caution_plot)
 ```
 
-Chart above shows utilizes where populations and/or MHI have been decreasing from 2010 - 2020, have not received funding, and have more than 50 total health violations from 2005 - 2024. TX0030030 located in Zavalla TX, for example, has been increasing in violations since 2017, has the lowest (& declining!) MHI out of our collection of CWS, and moderate population loss. These characteristics may represent a CWS in need of funding. 
-
+Chart above shows utilizes where populations and/or MHI have been decreasing from 2010 - 2020, have not received funding, and have more than 50 total health violations from 2005 - 2024. TX0030030 located in Zavalla TX, for example, has been increasing in violations since 2017, had 22 health-based violations in 2022, and has the lowest (& declining!) MHI out of our collection of CWS, and moderate population loss. These characteristics may represent a CWS in need of funding. 
 
 ```{r fig.height = 9, fig.width = 10}
 of_caution_geo <- tx_xwalk %>% 
@@ -1422,8 +1480,8 @@ leaflet() %>%
                    group = "Toner Lite") %>%
   addPolygons(data = of_caution_geo,
               # slight opacity
-              fillOpacity = 0.2,
-              color = "green",
+              fillOpacity = 0.8,
+              color = "red",
               weight = 1, 
               smoothFactor = 0, 
               label = paste0("pwsid: ", of_caution_geo$pwsid))
