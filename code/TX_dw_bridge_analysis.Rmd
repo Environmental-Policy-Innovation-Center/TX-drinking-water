@@ -730,8 +730,14 @@ Demographic data for CWS in TX are relatively similar across the study period. B
 ## 3.2: What changes in violations do we see in fragile systems? 
 ```{r fig.height = 9, fig.width = 10}
 # working directory: - using a direct file path to knit the rmd 
-file_loc <- "/Users/emmalitsai/TX-drinking-water/data/raw/sdwa_download"
+# grabbing latest data from sdwa
+# file_loc <- "./data/raw/sdwa_download"
+# download.file("https://echo.epa.gov/files/echodownloads/SDWA_latest_downloads.zip",
+#               destfile = paste0(file_loc, ".zip"))
+# unzip(zipfile = paste0(file_loc, ".zip"), exdir = file_loc)
+# file.remove(paste0(file_loc, ".zip"))
 
+file_loc <- "/Users/emmalitsai/TX-drinking-water/data/raw/sdwa_download"
 # reading in violations: 
 # NOTE - there are quite a few rows w/o violation_ids, but enforcement_ids
 sdwa_viols <- read.csv(paste0(file_loc, "/SDWA_VIOLATIONS_ENFORCEMENT.csv")) %>%
@@ -756,7 +762,7 @@ tx_viol_rulecode <- merge(tx_viols, rule_family_codes,
                           by.y = "value_code", 
                           all.x = T) %>%
 ### START OF STEPS FROM EMAIL: ################################################
-  # STEP ONE: concatenate PWSID and violation_id to create a unique indentifier: 
+  # STEP ONE: concatenate PWSID and violation_id to create a unique identifier: 
   mutate(pwsid_viol_id = paste0(pwsid, "-", violation_id))
 
 # STEP TWO: remove duplicates, keep distinct records using unique ID from 
@@ -1524,3 +1530,39 @@ tx_summary_trends <- tx_decade %>%
 # table for people to explore: 
 DT::datatable(tx_summary_trends)
 ```
+
+# 7.0 Can we fold in HUC-level information for CWS in TX?
+```{r}
+# intake <- aws.s3::s3read_using(read.csv, 
+#                                object = "s3://tech-team-data/state-drinking-water/national/Intake_HUC12.csv") %>%
+#   janitor::clean_names() %>%
+#   mutate(intake_huc12 = as.numeric(huc12), 
+#          pwsid = case_when(nchar(pwsid) == 8 ~ paste0("0", pwsid), 
+#                            TRUE ~ pwsid))
+# 
+# well <- aws.s3::s3read_using(read.csv, 
+#                              object = "s3://tech-team-data/state-drinking-water/national/Wells_HUC12.csv") %>%
+#   janitor::clean_names() %>%
+#   mutate(well_huc12 = as.numeric(huc12), 
+#          pwsid = case_when(nchar(pwsid) == 8 ~ paste0("0", pwsid), 
+#                            TRUE ~ pwsid))
+# 
+# # grabbing all HUCs by pwsid: 
+# well_pwsid_hucs <- well %>%
+#   group_by(pwsid) %>%
+#   summarize(all_well_hucs = paste(unique(well_huc12), collapse = ", "))
+# 
+# intake_pwsid_hucs <- intake %>%
+#   group_by(pwsid) %>%
+#   summarize(all_intake_hucs = paste(unique(intake_huc12), collapse = ", "))
+# 
+# # combining everything: 
+# all_hucs <- merge(well_pwsid_hucs, intake_pwsid_hucs, by = "pwsid", all = T)
+# 
+# 
+# # filtering for TX: 
+# tx_huc_info <- all_hucs %>% 
+#   filter(pwsid %in% tx_xwalk$pwsid)
+# test <- merge(tx_huc_info, app_data_ws_info, by = "pwsid", all.y = T)
+```
+
