@@ -339,7 +339,37 @@ One of the most striking difference across all of our indicators was EPA's new d
 # In addition, the state includes two adjustments that can only increase the HCF (i.e., benefit the applicant) - this includes unemployment rates & population adjustments 
 
 
-# could ask water team for loan costs 
+# part a: what is the 75% of state MHI?
+tx_mhi <- tidycensus::get_acs(
+  geography = "state",
+  variables = c(mhi = "B19013_001"),
+  state = "TX",
+  year = 2020,
+  geometry = TRUE
+)
+pct_75_mhi <- tx_mhi$estimate*0.75
+
+
+# grabbing d: from acs 2020 estimate
+d <- tx_xwalk %>% 
+  as.data.frame() %>%
+  select(pwsid, estimate_mhi) %>%
+  mutate(meets_criteria_a = 
+           case_when(estimate_mhi <= pct_75_mhi ~ "Yes", 
+                     TRUE ~ "No"))
+
+# grabbing ab: duke's affordability dashboard for water and sewer rates 
+# NOTE - these only have data for 706 pwsids
+water_rates <- fin$TX_affordability_DAC
+# these all have sewer and water 
+ab <- water_rates %>%
+  as.data.frame() %>%
+  mutate(water_sewer_year = total_water_year + total_sewer_year) %>%
+  select(pwsid, water_sewer_year)
+
+# grabbing c: annual loan cost per household of new financing
+# talked w/ Phil, and this is difficult for a number of reasons. 
+
 
 
 # TX definition of "safe, adequate, and reliable"
@@ -357,8 +387,6 @@ One of the most striking difference across all of our indicators was EPA's new d
 # 2 NO DATA     13625
 # 3 PROVISIONAL     8
 # 4 SUPERIOR      738
-
-# check this: s3://tech-team-data/state-drinking-water/TX/raw/TX_TCEQ_DWW/TX_20231217/WaterSystemDetail/TX_Water System Details_20231217_20231229203427.csv
 
 # TX definition of a failing system 
 ```
@@ -868,7 +896,8 @@ leaflet() %>%
 # water rates: B25134 - only go back to 2021, and only in 1yr acs which
 # "The 1-year ACS provides data for geographies with populations of 65,000 and greater."
 # so it only has data for large counties
-# all_census_vars <- load_variables(2023, "acs1", cache = TRUE)
+# all_census_vars <- load_variables(2020, "acs5", cache = TRUE)
+# TODO - we have this var for 2021 and 2022 tract level for ACS 5yr!!!!!
 
 census_vars <- c(total_pop = "B01003_001", 
                  mhi = "B19013_001", 
@@ -1531,38 +1560,173 @@ tx_summary_trends <- tx_decade %>%
 DT::datatable(tx_summary_trends)
 ```
 
-# 7.0 Can we fold in HUC-level information for CWS in TX?
-```{r}
-# intake <- aws.s3::s3read_using(read.csv, 
-#                                object = "s3://tech-team-data/state-drinking-water/national/Intake_HUC12.csv") %>%
-#   janitor::clean_names() %>%
-#   mutate(intake_huc12 = as.numeric(huc12), 
-#          pwsid = case_when(nchar(pwsid) == 8 ~ paste0("0", pwsid), 
-#                            TRUE ~ pwsid))
-# 
-# well <- aws.s3::s3read_using(read.csv, 
-#                              object = "s3://tech-team-data/state-drinking-water/national/Wells_HUC12.csv") %>%
-#   janitor::clean_names() %>%
-#   mutate(well_huc12 = as.numeric(huc12), 
-#          pwsid = case_when(nchar(pwsid) == 8 ~ paste0("0", pwsid), 
-#                            TRUE ~ pwsid))
-# 
-# # grabbing all HUCs by pwsid: 
-# well_pwsid_hucs <- well %>%
-#   group_by(pwsid) %>%
-#   summarize(all_well_hucs = paste(unique(well_huc12), collapse = ", "))
-# 
-# intake_pwsid_hucs <- intake %>%
-#   group_by(pwsid) %>%
-#   summarize(all_intake_hucs = paste(unique(intake_huc12), collapse = ", "))
-# 
-# # combining everything: 
-# all_hucs <- merge(well_pwsid_hucs, intake_pwsid_hucs, by = "pwsid", all = T)
-# 
-# 
-# # filtering for TX: 
-# tx_huc_info <- all_hucs %>% 
-#   filter(pwsid %in% tx_xwalk$pwsid)
-# test <- merge(tx_huc_info, app_data_ws_info, by = "pwsid", all.y = T)
+# 7.0 Violation summary stats
+```{r message = F, results='hide'}
+# Taking code from Oregon and running summary stats for TX
+# on violations: 
+
+# breaking data and summarizing: 
+# 4,616 SABs turns to 4,559 --> removed 57 SABs
+tx_viols <- tx_xwalk %>%
+  filter(estimate_hh_below_pov_per >= 0) %>%
+  filter(!is.na(estimate_mhi)) %>%
+  filter(!is.na(estimate_hh_below_pov_per)) %>%
+  as.data.frame() 
+         
+### % of households below poverty ###
+pov_viols <- tx_viols %>%
+  # eight have % below 0, likely due to errors or difficulties associated with interpolation
+  mutate(pct_hh_below_pov_bin = cut(estimate_hh_below_pov_per, 
+                                    breaks = c(0, 5, 10, 20, 
+                                               30, 40, 50, 60), 
+                                    include.lowest = T))
+
+# summarize by binned values
+pov_viols %>%
+  group_by(pct_hh_below_pov_bin) %>%
+  summarize(total_sabs = n(), 
+            mean_health_viols_10yr = mean(health_viols_10yr), 
+            sd_health_viols_10yr = sd(health_viols_10yr), 
+            min = min(health_viols_10yr), 
+            max = max(health_viols_10yr)) %>%
+  rename("% Househlds Below Poverty" = pct_hh_below_pov_bin, 
+         "Total SABs" = total_sabs, 
+         "Mean Health Violations, 10yr" = mean_health_viols_10yr,
+         "SD Health Violations, 10yr" = sd_health_viols_10yr)
+
+
+# summarize by cutoff
+pov_viols %>%
+  filter(estimate_hh_below_pov_per < 15) %>%
+  summarize(total_sabs = n(), 
+            mean_below_15 = mean(health_viols_10yr), 
+            sd_below_15 = sd(health_viols_10yr), 
+            min = min(health_viols_10yr), 
+            max = max(health_viols_10yr))
+
+pov_viols %>%
+  filter(estimate_hh_below_pov_per >= 15) %>%
+  summarize(total_sabs = n(),
+            mean_greater_equal_15 = mean(health_viols_10yr), 
+            sd_greater_equal_15 = sd(health_viols_10yr), 
+            min = min(health_viols_10yr), 
+            max = max(health_viols_10yr))
+
+
+### Median household income ### 
+mhi_viols <- tx_viols %>%
+  # eight have % below 0, likely due to errors or difficulties associated with interpolation
+  mutate(mhi_bin = cut(estimate_mhi, breaks = c(0, 25000, 50000, 75000, 
+                                                100000, 120000, 250001), 
+                       labels = c("$0-25,000", "$25,001-50,000", 
+                                  "$50,001-75,000", "$75,001-100,000", 
+                                  "$100,001-120,000", "$120,001-250,001"),
+                       include.lowest = T))
+
+
+# summarize by binned mhi
+mhi_viols %>%
+  group_by(mhi_bin) %>%
+  summarize(total_sabs = n(), 
+            mean_health_viols_10yr = mean(health_viols_10yr), 
+            sd_health_viols_10yr = sd(health_viols_10yr), 
+            min = min(health_viols_10yr), 
+            max = max(health_viols_10yr)) %>%
+  rename("Median Household Income" = mhi_bin,
+         "Total SABs" = total_sabs, 
+         "Mean Health Violations, 10yr" = mean_health_viols_10yr, 
+         "SD Health Violations, 10yr" = sd_health_viols_10yr, 
+         "Minimum Health Violations, 10yr" = min, 
+         "Maximum Health Violations, 10yr" = max)
+
+# summarize by cutoff: 
+mhi_viols %>%
+  filter(estimate_mhi < 50000) %>%
+  summarize(total_sabs = n(), 
+            mean_below_50 = mean(health_viols_10yr), 
+            sd_below_50 = sd(health_viols_10yr), 
+            min = min(health_viols_10yr), 
+            max = max(health_viols_10yr))
+# open viols?
+mhi_viols %>%
+  filter(estimate_mhi < 50000) %>%
+  filter(open_health_viol == "Yes") %>%
+  tally()
+
+
+mhi_viols %>%
+  filter(estimate_mhi >= 50000) %>%
+  summarize(total_sabs = n(),
+            mean_greater_equal_50 = mean(health_viols_10yr), 
+            sd_greater_equal_50 = sd(health_viols_10yr), 
+            min = min(health_viols_10yr), 
+            max = max(health_viols_10yr))
+# open viols?
+mhi_viols %>%
+  filter(estimate_mhi >= 50000) %>%
+  filter(open_health_viol == "Yes") %>%
+  tally()
+
+
+
+# fonts: 
+sysfonts::font_add_google("Lato")
+showtext::showtext_auto()
+
+# palettes: 
+# continuous palettes - based on EPIC's primary colors: 
+cont_palette <- colorRampPalette(c("#172f60","#4ea324"))
+cat_palette <- colorRampPalette(c("#172f60","#1054a8",
+                                  "#791a7b","#de9d29", 
+                                  "#b15712","#4ea324"))
+# plotting: 
+epic_chart_theme <- theme_minimal() + 
+  theme(legend.position = "right", 
+        text = element_text(size = 13, family = "Lato"), 
+        legend.text = element_text(size = 10, family = "Lato"), 
+        legend.title = element_text(size = 11, family = "Lato"), 
+        axis.text.x = element_text(margin = margin(t = 10, r = 0, 
+                                                   b = 0, l = 0)), 
+        axis.title.x = element_text(margin = margin(t = 10, r = 0, 
+                                                    b = 0, l = 0)), 
+        axis.text.y = element_text(margin = margin(t = 0, r = 10, 
+                                                   b = 0, l = 0)), 
+        axis.title.y = element_text(margin = margin(t = 0, r = 10, 
+                                                    b = 0, l = 0))) 
+
+ggplot(mhi_viols, aes(x = estimate_mhi, 
+                      y = estimate_hh_below_pov_per, 
+                      size = health_viols_10yr, 
+                      color = health_viols_10yr)) + 
+  geom_point(alpha = 0.7) +
+  scale_colour_gradientn(colours = cont_palette(3), 
+                         name = "Health Violations \n10yr") + 
+  epic_chart_theme
+
+
+# trying to facet to clean up relationships:
+library(ggridges)
+
+df_plotting <- mhi_viols %>%
+  select(pwsid, estimate_mhi, estimate_hh_below_pov_per, 
+         health_viols_10yr) %>%
+  pivot_longer(., cols = c(estimate_mhi, estimate_hh_below_pov_per)) %>%
+  mutate(clean_name = case_when(
+    name == "estimate_mhi" ~ "Median Household Income ($)", 
+    TRUE ~ "% Households Below Poverty"
+  ))
+
+ggplot(df_plotting, aes(x = value, 
+                        y = health_viols_10yr, 
+                        color = clean_name)) + 
+  geom_jitter(width = 0.001, size = 3, alpha = 0.7) + 
+  scale_colour_manual(values = cat_palette(2), 
+                      name = "") + 
+  facet_wrap(~clean_name, scales = "free_x", ncol = 1) + 
+  epic_chart_theme + 
+  theme(legend.position = "none") + 
+  labs(x = "", y = "Health Violations, 10 Years")
+
 ```
+
 
