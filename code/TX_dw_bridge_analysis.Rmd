@@ -765,7 +765,7 @@ Demographic data for CWS in TX are relatively similar across the study period. B
 # unzip(zipfile = paste0(file_loc, ".zip"), exdir = file_loc)
 # file.remove(paste0(file_loc, ".zip"))
 
-file_loc <- "/Users/emmalitsai/TX-drinking-water/data/raw/sdwa_download"
+file_loc <- "/Users/emmalitsai/water-data/epa-sabs-comparison/data/sdwa_download"
 # reading in violations: 
 # NOTE - there are quite a few rows w/o violation_ids, but enforcement_ids
 sdwa_viols <- read.csv(paste0(file_loc, "/SDWA_VIOLATIONS_ENFORCEMENT.csv")) %>%
@@ -1729,4 +1729,75 @@ ggplot(df_plotting, aes(x = value,
 
 ```
 
+# 8.0 Bonus water affordability analysis 
+```{r}
+library(sf)
+library(leaflet)
 
+# read in latest xwalk with water rates
+xwalk_new <- aws.s3::s3read_using(st_read, 
+                                  object = "/service_area_boundaries/epa-sabs/epa-sabs-crosswalk-acs2021.geojson",
+                                  bucket = "tech-team-data",
+                                  quiet = TRUE)
+
+# filter for those in TX project: 
+tx_xwalk_new <- xwalk_new %>%
+  filter(pwsid %in% tx_xwalk$pwsid)
+
+# mutating to get estimate water rates using a weighted mean 
+wr <- tx_xwalk_new %>%
+  select(pwsid, mhi, total_water_rates, health_viols_10yr, 
+         water_rate_less_125:water_rate_over_1000) %>%
+  rowwise() %>%
+  mutate(
+    # finding total $ contributed by each bin using the bin's midpoint:
+    less_125_mp = water_rate_less_125*62,
+    between_125_249_mp = water_rate_between_125_249*187, 
+    between_250_499_mp = water_rate_between_250_499*374.5,
+    between_500_749_mp = water_rate_between_500_749*624.5, 
+    between_750_999_mp = water_rate_between_750_999*874.5, 
+    # NOTE - assuming "midpoint" for >100 cat is just a half of a full
+    # bin above 1000
+    over_1000_mp = water_rate_over_1000*1124.5,
+    # summing total amount: 
+    total = sum(less_125_mp, between_125_249_mp, between_250_499_mp,
+                between_500_749_mp, between_750_999_mp, over_1000_mp), 
+    # diving by total people to get a ROUGH mean
+    mean_rate = total/total_water_rates, 
+    # finding pct of mhi spent on water annually
+    rate_div_mhi = (mean_rate/mhi)*100
+  )
+
+
+# mappin'
+cont_palette <- colorRampPalette(c("#172f60","#4ea324"))
+
+rate_pal <- colorBin(
+  bins = c(0, 0.5, 0.75, 1, 3, 6),
+  palette = cont_palette(5),
+  domain = wr$rate_div_mhi)
+
+leaflet() %>%
+  addProviderTiles(providers$CartoDB.Positron, 
+                   group = "Toner Lite") %>%
+  addPolygons(data = wr,
+              fillColor = ~rate_pal(rate_div_mhi),
+              # slight opacity
+              fillOpacity = 0.95,
+              color = "black",
+              weight = 1, 
+              smoothFactor = 0, 
+              label = paste0("% MHI spent on Water & Sewer : ",
+                             round(wr$rate_div_mhi, 3), "%")) %>%
+    addLegend("bottomright",
+              pal = rate_pal,
+              values = wr$rate_div_mhi,
+              # if working with money or percentages, use the 
+              # follow label formats: 
+              # labFormat = labelFormat(prefix = "$"),
+              labFormat = labelFormat(prefix = "%"),
+              title = "% MHI spent on Water",
+              opacity = 1) 
+
+
+```
