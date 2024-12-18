@@ -5,10 +5,19 @@ imgurl: https://tech-team-data.s3.us-east-1.amazonaws.com/state-drinking-water/T
 
 # Health Violations 101
 
-Health violations are surprisingly common, ranging from bacterial contamination 
-to chemical safety breaches, and they relate to failing systems because they 
-directly indicate potential public health risks that undermine safe drinking 
-water delivery. 
+Take for example health violations. Health violations are common, with [1 in 10 
+Americans drinking water from a system that experienced water quality violations 
+during the three-year period 2018 to 2020](https://iopscience.iop.org/article/10.1088/1748-9326/ace2d9#erlace2d9s2). 
+Violations range from bacterial contamination to chemical safety breaches, and 
+can indicate a potentially failing system because they directly correlate with 
+public health risks that undermine safe drinking water delivery. However, data 
+on health violations is dependent on various factors, including enforcement 
+rates, regulatory frameworks, reporting consistency, and real-world water 
+system issues. To understand more, we will examine the growth of health-based 
+violations in Texas from the period 1975-2024.
 
-When we look at health violations in Texas in the past 40 years, we see a 
-stark increase starting in the early 2000s: 
+In this graph, are we actually witnessing an increase in water quality 
+violations? Or a decline in water quality? The reality on the ground may be 
+more nuanced: 
+
+
