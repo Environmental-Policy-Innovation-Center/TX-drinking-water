@@ -1734,6 +1734,9 @@ ggplot(df_plotting, aes(x = value,
 library(sf)
 library(leaflet)
 
+keys <- aws.s3::s3read_using(readRDS, 
+                            object = "s3://tech-team-data/state-drinking-water/TX/clean/TX_merging_keys_list.RData")
+
 # read in latest xwalk with water rates
 xwalk_new <- aws.s3::s3read_using(st_read, 
                                   object = "/service_area_boundaries/epa-sabs/epa-sabs-crosswalk-acs2021.geojson",
@@ -1799,5 +1802,67 @@ leaflet() %>%
               title = "% MHI spent on Water",
               opacity = 1) 
 
+# summarize for east tx: 
+east_tx <- keys$analysis_keys
+etx_pwisds <- east_tx %>% 
+  filter(east_tx_flag == "yes")
+wr_etx <- wr %>% 
+  filter(pwsid %in% etx_pwisds$pwsid)
 
+leaflet() %>%
+  addProviderTiles(providers$CartoDB.Positron, 
+                   group = "Toner Lite") %>%
+  addPolygons(data = wr_etx,
+              fillColor = ~rate_pal(rate_div_mhi),
+              # slight opacity
+              fillOpacity = 0.95,
+              color = "black",
+              weight = 1, 
+              smoothFactor = 0, 
+              label = paste0("% MHI spent on Water & Sewer : ",
+                             round(wr_etx$rate_div_mhi, 3), "%")) %>%
+    addLegend("bottomright",
+              pal = rate_pal,
+              values = wr_etx$rate_div_mhi,
+              # if working with money or percentages, use the 
+              # follow label formats: 
+              # labFormat = labelFormat(prefix = "$"),
+              labFormat = labelFormat(prefix = "%"),
+              title = "% MHI spent on Water",
+              opacity = 1) 
+
+# means: 
+mean(wr_etx$rate_div_mhi, na.rm = T)
+# 1.08 % of mhi to water - 0.17% more than the rest of TX 
+mean(wr_etx$mean_rate, na.rm = T)
+# $577.478
+
+# lowest quintile of income across all of TX: 
+lowest_quintile <- quantile(tx_xwalk_new$mhi, 
+                            probs = c(0.2, 0.8, 1), na.rm = T) 
+# 51657.4 
+
+wr_etx %>%
+  as.data.frame() %>%
+  # mutate(east_tx_flag = case_when(
+  #   pwsid %in% east_tx$pwsid ~ "east_tx", 
+  #   TRUE ~ "not_east_tx"
+  # )) %>%
+  mutate(lowest_quintile = case_when(
+    mhi <= lowest_quintile[1] ~ "lowest_quintile", 
+    mhi >=  lowest_quintile[2] ~ "highest_quintile", 
+    TRUE ~ "other"
+  )) %>%
+  group_by(lowest_quintile) %>%
+  summarize(pwsids = n(), 
+    mean_wr = mean(mean_rate, na.rm = T), 
+            mean_pct_water = mean(rate_div_mhi, na.rm = T))
+
+
+rest_of_tx <- wr %>% 
+  filter(!(pwsid %in% wr_etx$pwsid))
+mean(rest_of_tx$rate_div_mhi, na.rm = T)
+# 0.91% of mhi to water
+mean(rest_of_tx$mean_rate, na.rm = T)
+# $624.1628 annually for water
 ```

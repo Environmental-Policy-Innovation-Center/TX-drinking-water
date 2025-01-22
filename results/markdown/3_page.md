@@ -4,9 +4,11 @@ imgurl: https://tech-team-data.s3.us-east-1.amazonaws.com/state-drinking-water/T
 ---
 <meta http-equiv="Content-Type" content="text/html;charset=utf-8" />
 
-# The Rise of Drinking Water Violations 
+# Changes in Health-Based Drinking Water Violations: 2001 - 2010
 
-When we look at health violations in Texas in the past 40 years, we see a stark 
-increase starting in the early 2000s. Several [national primary drinking water regulations](https://www.epa.gov/dwreginfo/drinking-water-regulations) 
-came into effect at the turn of the century which may have an effect on the next 
-increase in the graph. 
+When we look at health-based violations in Texas in the past 40 years, 
+we see a stark increase starting in the early 2000s. Quite a few new 
+<a href="https://www.epa.gov/dwreginfo/drinking-water-regulations" target="_blank"> national primary drinking water regulations </a>
+came into effect at the turn of the century. Similar to the impact of the new 
+TCR noted in the figure above, these new requirements may be behind the 
+increased violations highlighted in the figure to the left.
